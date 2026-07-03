@@ -1,0 +1,55 @@
+agents:
+- name: 近期股价分析师
+  module: src.agents.technical_analyst
+  class: TechnicalAnalyst
+  description: 基于K线形态和技术指标分析短期走势
+  enabled: true
+  requires_data: true
+- name: 最新新闻分析师
+  module: src.agents.news_analyst
+  class: NewsAnalyst
+  description: 分析近期新闻的情绪和事件影响
+  enabled: true
+  requires_data: true
+- name: 公司前景分析师
+  module: src.agents.fundamental_analyst
+  class: FundamentalAnalyst
+  description: 基于财报和估值判断公司内在价值
+  enabled: true
+  requires_data: true
+- name: 国际形势分析师
+  module: src.agents.macro_analyst
+  class: MacroAnalyst
+  description: 分析宏观环境和地缘政治影响
+  enabled: true
+  requires_data: true
+- name: 行业对比分析师
+  module: src.agents.industry_analyst
+  class: IndustryAnalyst
+  description: 对比同行业估值与盈利能力，判断行业景气度
+  enabled: true
+  requires_data: true
+weights:
+  short:
+    近期股价分析师: 0.3
+    最新新闻分析师: 0.2
+    公司前景分析师: 0.12
+    国际形势分析师: 0.12
+    行业对比分析师: 0.1
+    综合研判: 0.16
+  medium:
+    近期股价分析师: 0.2
+    最新新闻分析师: 0.12
+    公司前景分析师: 0.22
+    国际形势分析师: 0.18
+    行业对比分析师: 0.15
+    综合研判: 0.13
+  long:
+    近期股价分析师: 0.08
+    最新新闻分析师: 0.04
+    公司前景分析师: 0.32
+    国际形势分析师: 0.28
+    行业对比分析师: 0.18
+    综合研判: 0.1
+fallback:
+  strategy: proportional

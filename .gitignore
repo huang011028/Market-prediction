@@ -1,0 +1,43 @@
+# 环境变量（含 API Keys）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 输出目录（分析报告）
+output/*.md
+output/*.json
+!output/.gitkeep
+
+# 日志
+logs/
+*.log
+
+# 缓存
+data/cache/
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb

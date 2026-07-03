@@ -1,0 +1,716 @@
+/* ============================================================
+   Market Prediction — 前端样式
+   深色金融风格 + 响应式布局
+   ============================================================ */
+
+/* --- 基础变量 --- */
+:root {
+    --bg-primary: #0f1923;
+    --bg-secondary: #1a2634;
+    --bg-card: #1e2d3d;
+    --bg-card-hover: #243447;
+    --border: #2a3f55;
+    --text-primary: #e8edf2;
+    --text-secondary: #8899aa;
+    --text-muted: #5a6f80;
+    --accent: #4da6ff;
+    --accent-hover: #66b3ff;
+    --bullish: #00c853;
+    --bearish: #ff1744;
+    --neutral: #ffc107;
+    --info: #00bcd4;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.3);
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+}
+
+/* --- 重置 --- */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: var(--font);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+/* --- 头部 --- */
+.header {
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.header-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 24px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.logo-icon { font-size: 24px; }
+.logo-text {
+    font-size: 18px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.nav { display: flex; gap: 4px; }
+
+.nav-link {
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.nav-link:hover { color: var(--text-primary); background: var(--bg-card); }
+.nav-link.active { color: var(--accent); background: var(--bg-card); }
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--neutral);
+}
+.status-dot.online { background: var(--bullish); }
+.status-dot.offline { background: var(--bearish); }
+
+/* --- 主内容 --- */
+.main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* --- 输入区 --- */
+.input-section { margin-bottom: 24px; }
+
+.input-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: var(--shadow);
+}
+
+.input-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-primary);
+}
+
+.input-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.target-input {
+    flex: 1;
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 16px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.target-input:focus { border-color: var(--accent); }
+.target-input::placeholder { color: var(--text-muted); }
+
+.timeframe-select {
+    padding: 12px 16px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 14px;
+    outline: none;
+    cursor: pointer;
+}
+
+.analyze-btn {
+    padding: 12px 28px;
+    background: linear-gradient(135deg, #4da6ff, #6366f1);
+    border: none;
+    border-radius: var(--radius-sm);
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.analyze-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(77,166,255,0.4); }
+.analyze-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+.input-options {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.option-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.option-label input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+.quick-inputs {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.quick-label { font-size: 12px; color: var(--text-muted); }
+
+.quick-btn {
+    padding: 4px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.quick-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* --- 加载状态 --- */
+.loading-section { margin: 40px 0; }
+
+.loading-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 48px;
+    text-align: center;
+}
+
+.loading-spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 16px;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-text { font-size: 16px; color: var(--text-secondary); margin-bottom: 24px; }
+
+.progress-bar {
+    width: 100%;
+    max-width: 400px;
+    height: 6px;
+    background: var(--bg-primary);
+    border-radius: 3px;
+    margin: 0 auto 8px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), #a78bfa);
+    border-radius: 3px;
+    transition: width 0.3s;
+    width: 0%;
+}
+
+.progress-text { font-size: 12px; color: var(--text-muted); }
+
+/* --- 综合预测卡片 --- */
+.final-report-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+    margin-bottom: 24px;
+    box-shadow: var(--shadow);
+}
+
+.report-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.report-title { font-size: 20px; font-weight: 700; }
+.report-target { font-size: 14px; color: var(--text-muted); }
+
+.report-main {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.direction-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: 24px;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.direction-badge.bullish { background: rgba(0,200,83,0.15); color: var(--bullish); }
+.direction-badge.bearish { background: rgba(255,23,68,0.15); color: var(--bearish); }
+.direction-badge.neutral { background: rgba(255,193,7,0.15); color: var(--neutral); }
+
+.direction-icon { font-size: 20px; }
+.bullish .direction-icon::content { content: "📈"; }
+.bearish .direction-icon::content { content: "📉"; }
+.neutral .direction-icon::content { content: "➡️"; }
+
+.magnitude-display {
+    font-size: 24px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.magnitude-display.bullish { color: var(--bullish); }
+.magnitude-display.bearish { color: var(--bearish); }
+.magnitude-display.neutral { color: var(--neutral); }
+
+.confidence-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.confidence-label { font-size: 13px; color: var(--text-muted); }
+
+.confidence-bar {
+    width: 120px;
+    height: 8px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.confidence-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--info), var(--accent));
+    border-radius: 4px;
+    transition: width 0.5s;
+}
+
+.confidence-value { font-size: 14px; font-weight: 600; min-width: 40px; }
+
+.report-summary {
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    padding: 16px 20px;
+    font-size: 14px;
+    line-height: 1.8;
+    color: var(--text-secondary);
+    border-left: 3px solid var(--accent);
+}
+
+.report-footer {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* --- Agent 结果网格 --- */
+.section-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-primary);
+}
+
+.agent-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.agent-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+}
+
+.agent-card:hover {
+    background: var(--bg-card-hover);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow);
+}
+
+.agent-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+}
+
+.agent-card.bullish::before { background: var(--bullish); }
+.agent-card.bearish::before { background: var(--bearish); }
+.agent-card.neutral::before { background: var(--neutral); }
+
+.agent-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.agent-name { font-size: 15px; font-weight: 600; }
+
+.agent-direction {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+}
+
+.agent-direction.bullish { color: var(--bullish); background: rgba(0,200,83,0.1); }
+.agent-direction.bearish { color: var(--bearish); background: rgba(255,23,68,0.1); }
+.agent-direction.neutral { color: var(--neutral); background: rgba(255,193,7,0.1); }
+
+.agent-magnitude {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    font-variant-numeric: tabular-nums;
+}
+
+.agent-magnitude.bullish { color: var(--bullish); }
+.agent-magnitude.bearish { color: var(--bearish); }
+.agent-magnitude.neutral { color: var(--neutral); }
+
+.agent-confidence {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.agent-confidence-bar {
+    flex: 1;
+    height: 4px;
+    background: var(--bg-primary);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.agent-confidence-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+}
+
+.agent-confidence-value { font-size: 12px; color: var(--text-muted); min-width: 36px; }
+
+.agent-reasoning {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.agent-factors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.agent-factor {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+}
+
+/* --- 分歧 & 风险卡片 --- */
+.disagreements-card, .risks-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+}
+
+.card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+
+.disagreements-card ul, .risks-card ul {
+    list-style: none;
+    padding: 0;
+}
+
+.disagreements-card li, .risks-card li {
+    padding: 8px 0;
+    font-size: 14px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.disagreements-card li:last-child, .risks-card li:last-child { border-bottom: none; }
+
+/* --- 历史 Tab --- */
+.history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.history-header h2 { font-size: 18px; }
+
+.history-search {
+    padding: 8px 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 14px;
+    width: 240px;
+    outline: none;
+}
+
+.history-search:focus { border-color: var(--accent); }
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.history-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.history-item:hover { background: var(--bg-card-hover); }
+
+.history-info { display: flex; align-items: center; gap: 16px; }
+
+.history-direction {
+    width: 8px;
+    height: 40px;
+    border-radius: 4px;
+}
+
+.history-direction.bullish { background: var(--bullish); }
+.history-direction.bearish { background: var(--bearish); }
+.history-direction.neutral { background: var(--neutral); }
+
+.history-target { font-size: 16px; font-weight: 600; }
+.history-meta { font-size: 12px; color: var(--text-muted); }
+.history-confidence { text-align: right; }
+.history-confidence-value { font-size: 20px; font-weight: 700; }
+.history-confidence-label { font-size: 11px; color: var(--text-muted); }
+
+/* --- Agent Tab --- */
+.agents-section h2 { font-size: 18px; margin-bottom: 16px; }
+
+.agents-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+}
+
+.agent-info-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+}
+
+.agent-info-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.agent-info-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+
+.agent-weights { display: flex; gap: 12px; }
+
+.weight-item {
+    flex: 1;
+    text-align: center;
+    padding: 8px;
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+}
+
+.weight-value { font-size: 16px; font-weight: 700; color: var(--accent); }
+.weight-label { font-size: 11px; color: var(--text-muted); }
+
+/* --- 模态框 --- */
+.modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+}
+
+.modal-content {
+    position: relative;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 90%;
+    max-width: 700px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 48px rgba(0,0,0,0.5);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg-secondary);
+}
+
+.modal-header h3 { font-size: 16px; }
+
+.modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 24px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.modal-close:hover { color: var(--text-primary); background: var(--bg-card); }
+
+.modal-body { padding: 24px; }
+
+.detail-section { margin-bottom: 20px; }
+.detail-section h4 { font-size: 14px; color: var(--text-secondary); margin-bottom: 8px; }
+.detail-section p { font-size: 14px; line-height: 1.8; }
+
+.detail-reasoning {
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    font-size: 14px;
+    line-height: 1.8;
+}
+
+.detail-factors-list, .detail-risks-list {
+    list-style: none;
+    padding: 0;
+}
+
+.detail-factors-list li, .detail-risks-list li {
+    padding: 6px 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.detail-factors-list li::before { content: "✅ "; }
+.detail-risks-list li::before { content: "⚠️ "; }
+
+/* --- 响应式 --- */
+@media (max-width: 768px) {
+    .header-inner { padding: 0 16px; }
+    .main { padding: 16px; }
+    .input-row { flex-direction: column; }
+    .agent-grid { grid-template-columns: 1fr; }
+    .report-main { flex-direction: column; align-items: flex-start; }
+    .nav { display: none; }
+    .input-options { gap: 8px; }
+}
+
+/* --- 动画 --- */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.final-report-card, .agent-card, .history-item {
+    animation: fadeIn 0.3s ease-out;
+}

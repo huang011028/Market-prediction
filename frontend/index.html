@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Prediction — AI Agent 市场分析系统</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <header class="header">
+        <div class="header-inner">
+            <div class="logo">
+                <span class="logo-icon">📊</span>
+                <span class="logo-text">Market Prediction</span>
+            </div>
+            <nav class="nav">
+                <a href="#" class="nav-link active" data-tab="analyze">分析</a>
+                <a href="#" class="nav-link" data-tab="history">历史</a>
+                <a href="#" class="nav-link" data-tab="agents">Agent</a>
+            </nav>
+            <div class="status-indicator" id="statusIndicator">
+                <span class="status-dot"></span>
+                <span class="status-text">检查中...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <main class="main" id="mainContent">
+
+        <!-- ========== 分析 Tab ========== -->
+        <div class="tab-content active" id="tab-analyze">
+            <!-- 输入区 -->
+            <section class="input-section">
+                <div class="input-card">
+                    <h2 class="input-title">输入股票代码或公司名称</h2>
+                    <div class="input-row">
+                        <input type="text" id="targetInput" class="target-input"
+                               placeholder="输入代码: 000001 / 0700 / AAPL  或  名称: 腾讯"
+                               autocomplete="off">
+                        <select id="timeframeSelect" class="timeframe-select">
+                            <option value="短期(1周)">短期 (1周)</option>
+                            <option value="中期(1月)">中期 (1月)</option>
+                            <option value="长期(1季)">长期 (1季)</option>
+                        </select>
+                        <button id="analyzeBtn" class="analyze-btn">
+                            <span class="btn-text">开始分析</span>
+                            <span class="btn-loading" style="display:none">
+                                <span class="spinner"></span> 分析中...
+                            </span>
+                        </button>
+                    </div>
+                    <div class="input-options">
+                        <label class="option-label"><input type="checkbox" id="skipNews" value="news"> 跳过新闻</label>
+                        <label class="option-label"><input type="checkbox" id="skipFundamental" value="fundamental"> 跳过基本面</label>
+                        <label class="option-label"><input type="checkbox" id="skipMacro" value="macro"> 跳过宏观</label>
+                        <label class="option-label"><input type="checkbox" id="skipIndustry" value="industry"> 跳过行业</label>
+                    </div>
+                    <div class="quick-inputs">
+                        <span class="quick-label">快捷输入:</span>
+                        <button class="quick-btn" data-target="000001">平安银行</button>
+                        <button class="quick-btn" data-target="0700">腾讯控股</button>
+                        <button class="quick-btn" data-target="600519">贵州茅台</button>
+                        <button class="quick-btn" data-target="000333">美的集团</button>
+                        <button class="quick-btn" data-target="AAPL">Apple</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 加载状态 -->
+            <section class="loading-section" id="loadingSection" style="display:none">
+                <div class="loading-card">
+                    <div class="loading-spinner"></div>
+                    <p class="loading-text">AI Agent 团队正在分析中...</p>
+                    <div class="loading-progress">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <p class="progress-text" id="progressText">正在获取数据...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 结果区 -->
+            <section class="result-section" id="resultSection" style="display:none">
+
+                <!-- 综合预测卡片 -->
+                <div class="final-report-card" id="finalReportCard">
+                    <div class="report-header">
+                        <h3 class="report-title">🎯 综合预测</h3>
+                        <span class="report-target" id="reportTarget"></span>
+                    </div>
+                    <div class="report-body">
+                        <div class="report-main">
+                            <div class="direction-badge" id="directionBadge">
+                                <span class="direction-icon"></span>
+                                <span class="direction-text"></span>
+                            </div>
+                            <div class="magnitude-display" id="magnitudeDisplay"></div>
+                            <div class="confidence-display">
+                                <span class="confidence-label">置信度</span>
+                                <div class="confidence-bar">
+                                    <div class="confidence-fill" id="confidenceFill"></div>
+                                </div>
+                                <span class="confidence-value" id="confidenceValue"></span>
+                            </div>
+                        </div>
+                        <div class="report-summary" id="reportSummary"></div>
+                    </div>
+                    <div class="report-footer">
+                        <span id="elapsedTime"></span>
+                        <span id="predictionId"></span>
+                    </div>
+                </div>
+
+                <!-- Agent 结果网格 -->
+                <h3 class="section-title">📊 各维度分析结果</h3>
+                <div class="agent-grid" id="agentGrid"></div>
+
+                <!-- 分歧点 -->
+                <div class="disagreements-card" id="disagreementsCard" style="display:none">
+                    <h4 class="card-title">🔀 Agent 间分歧点</h4>
+                    <ul id="disagreementsList"></ul>
+                </div>
+
+                <!-- 风险提示 -->
+                <div class="risks-card" id="risksCard" style="display:none">
+                    <h4 class="card-title">⚠️ 关键风险提示</h4>
+                    <ul id="risksList"></ul>
+                </div>
+            </section>
+        </div>
+
+        <!-- ========== 历史 Tab ========== -->
+        <div class="tab-content" id="tab-history">
+            <section class="history-section">
+                <div class="history-header">
+                    <h2>📋 历史预测记录</h2>
+                    <input type="text" id="historySearch" class="history-search" placeholder="搜索标的代码/名称...">
+                </div>
+                <div class="history-list" id="historyList"></div>
+            </section>
+        </div>
+
+        <!-- ========== Agent Tab ========== -->
+        <div class="tab-content" id="tab-agents">
+            <section class="agents-section">
+                <h2>🤖 Agent 团队</h2>
+                <div class="agents-grid" id="agentsGrid"></div>
+            </section>
+        </div>
+
+    </main>
+
+    <!-- 详情模态框 -->
+    <div class="modal" id="detailModal" style="display:none">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">🔍 Agent 详细分析</h3>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -18,6 +18,7 @@ from src.core.base_agent import BaseAgent
 from src.core.llm_client import LLMClient
 from src.data.macro_fetcher import MacroFetcherV2
 from src.data.stock_context import get_stock_macro_context
+from src.data.symbol_resolver import resolve_symbol, identify_market
 from src.prompts.macro_prompts import (
     MACRO_SYSTEM_PROMPT,
     MACRO_ASSESSMENT_PROMPT,
@@ -54,15 +55,18 @@ class MacroAnalyst(BaseAgent):
 
     async def gather_data(self, target: str, timeframe: str) -> dict:
         """获取宏观数据 + 标的上下文 + 地缘事件"""
-        market = self._identify_market(target)
-        data = await self.fetcher.fetch(target, market)
+        info = resolve_symbol(target)
+        market = info.market
+        data = await self.fetcher.fetch(info.symbol, market)
         result = data.to_agent_dict()
 
         # 注入标的上下文
-        company_name = self._try_get_company_name(target, market)
-        stock_ctx = get_stock_macro_context(target, market, company_name)
+        company_name = info.name or self._try_get_company_name(info.symbol, market)
+        stock_ctx = get_stock_macro_context(info.symbol, market, company_name)
         result["_stock_context"] = stock_ctx
         result["_market"] = market
+        result["_resolved_symbol"] = info.symbol
+        result["_resolved_name"] = info.name
 
         # Round 2: 地缘政治事件采集（可选，失败不影响主流程）
         try:
@@ -77,12 +81,7 @@ class MacroAnalyst(BaseAgent):
         return result
 
     def _identify_market(self, symbol: str) -> str:
-        symbol = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "")
-        if symbol.isdigit():
-            if len(symbol) <= 5:
-                return "HK"
-            return "A"
-        return "US"
+        return identify_market(symbol)
 
     @staticmethod
     def _try_get_company_name(symbol: str, market: str) -> str:

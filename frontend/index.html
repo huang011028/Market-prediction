@@ -50,6 +50,7 @@
                                 <span class="spinner"></span> 分析中...
                             </span>
                         </button>
+                        <button id="cancelBtn" class="cancel-btn" style="display:none">取消</button>
                     </div>
                     <div class="input-options">
                         <label class="option-label"><input type="checkbox" id="skipNews" value="news"> 跳过新闻</label>
@@ -64,6 +65,9 @@
                         <button class="quick-btn" data-target="600519">贵州茅台</button>
                         <button class="quick-btn" data-target="000333">美的集团</button>
                         <button class="quick-btn" data-target="AAPL">Apple</button>
+                    </div>
+                    <div class="disclaimer-banner">
+                        本项目仅供学习、研究和工程验证使用，不构成任何投资建议。模型输出和数据源都可能出错，请勿直接据此做真实交易决策。
                     </div>
                 </div>
             </section>
@@ -110,7 +114,36 @@
                     </div>
                     <div class="report-footer">
                         <span id="elapsedTime"></span>
+                        <span id="generatedAt"></span>
                         <span id="predictionId"></span>
+                    </div>
+                </div>
+
+                <div class="result-disclaimer" id="resultDisclaimer"></div>
+
+                <div class="trend-card" id="priceTrendCard" style="display:none">
+                    <div class="trend-header">
+                        <h4 class="card-title">📈 近期走势</h4>
+                        <div class="trend-header-actions">
+                            <div class="trend-mode" id="trendMode" style="display:none">
+                                <button type="button" class="trend-mode-btn active" id="trendModeIntraday">分钟</button>
+                                <button type="button" class="trend-mode-btn" id="trendModeDaily">日线</button>
+                            </div>
+                            <span class="trend-meta" id="priceTrendMeta"></span>
+                        </div>
+                    </div>
+                    <div class="trend-chart" id="priceTrendChart"></div>
+                    <div class="trend-evidence" id="priceTrendEvidence"></div>
+                </div>
+
+                <div class="result-meta-grid">
+                    <div class="meta-card" id="dataQualityCard" style="display:none">
+                        <h4 class="card-title">🧭 数据源与新鲜度</h4>
+                        <div class="data-quality-list" id="dataQualityList"></div>
+                    </div>
+                    <div class="meta-card warning" id="failedAgentsCard" style="display:none">
+                        <h4 class="card-title">⚠️ 失败或降级 Agent</h4>
+                        <div class="failure-list" id="failedAgentsList"></div>
                     </div>
                 </div>
 

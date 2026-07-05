@@ -22,6 +22,7 @@ from src.core.base_agent import BaseAgent
 from src.core.llm_client import LLMClient
 from src.core.result import AnalysisResult, Direction, Magnitude
 from src.data.industry_fetcher import IndustryFetcher
+from src.data.symbol_resolver import resolve_symbol, identify_market
 from src.prompts.industry_prompts import (
     INDUSTRY_SYSTEM_PROMPT,
     CYCLICAL_INDUSTRY_APPENDIX,
@@ -66,28 +67,16 @@ class IndustryAnalyst(BaseAgent):
 
     async def gather_data(self, target: str, timeframe: str) -> dict:
         """获取增强版行业对比数据"""
-        market = self._identify_market(target)
-        data = await self.fetcher.fetch_enhanced(target, market)
+        info = resolve_symbol(target)
+        market = info.market
+        data = await self.fetcher.fetch_enhanced(info.symbol, market)
+        data["_resolved_symbol"] = info.symbol
+        data["_resolved_name"] = info.name
         return data
 
     def _identify_market(self, symbol: str) -> str:
         """识别市场，支持代码和中文名"""
-        s = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "")
-        if s.isdigit():
-            if len(s) <= 5:
-                return "HK"
-            return "A"
-        # 中文港股名
-        HK_NAMES = {"美团", "美团-W", "腾讯", "腾讯控股", "阿里巴巴", "阿里",
-                    "百度", "京东", "小米", "小米集团", "快手", "网易",
-                    "哔哩哔哩", "B站", "拼多多", "商汤", "海底捞", "安踏",
-                    "李宁", "华润啤酒", "青岛啤酒", "中芯国际", "药明生物",
-                    "信达生物", "百济神州", "君实生物"}
-        if s in HK_NAMES:
-            return "HK"
-        if s.isalpha():
-            return "US"
-        return "US"
+        return identify_market(symbol)
 
     def _get_system_prompt(self) -> str:
         return INDUSTRY_SYSTEM_PROMPT

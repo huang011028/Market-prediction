@@ -35,6 +35,7 @@ from src.agents.fundamental_analyst import FundamentalAnalyst
 from src.agents.macro_analyst import MacroAnalyst
 from src.agents.industry_analyst import IndustryAnalyst
 from src.agents.aggregator import Aggregator
+from src.data.symbol_resolver import resolve_symbol
 from config.settings import get_settings
 from config.weight_manager import WeightManager
 
@@ -81,7 +82,11 @@ async def main():
     logger.info("=" * 60)
     logger.info("  Market Prediction — Phase 2 (多维度分析)")
     logger.info("=" * 60)
-    logger.info(f"  标的: {args.target}")
+    target_info = resolve_symbol(args.target)
+    resolved_target = target_info.symbol
+    target_label = target_info.display_name
+
+    logger.info(f"  标的: {args.target} -> {target_label} [{target_info.market}]")
     logger.info(f"  周期: {args.timeframe}")
     logger.info(f"  LLM:  {settings.LLM_MODEL}")
 
@@ -153,7 +158,7 @@ async def main():
 
     # === Step 1: 并行执行 ===
     agent_results = await orchestrator.run_selected(
-        args.target, args.timeframe,
+        resolved_target, args.timeframe,
         agent_names=active_names,
     )
 
@@ -189,7 +194,7 @@ async def main():
     logger.info(f"\n🎯 汇总分析师综合研判...")
 
     report = await aggregator.aggregate(
-        args.target, args.timeframe,
+        target_label, args.timeframe,
         agent_results,
         weight_config=weight_config,
         failed_agents=failed_names if failed_names else None,
@@ -202,7 +207,7 @@ async def main():
         from src.data.prediction_store import PredictionStore
         store = PredictionStore()
         pid = store.save_prediction(
-            target=args.target,
+            target=resolved_target,
             timeframe=args.timeframe,
             report=report,
             agent_results=agent_results,
@@ -210,6 +215,7 @@ async def main():
             agents_failed=failed_names,
             elapsed_seconds=total_elapsed,
             llm_model=settings.LLM_MODEL,
+            target_name=target_info.name,
         )
         logger.info(f"💾 预测已记录: {pid}")
     except Exception as e:

@@ -7,7 +7,7 @@
 
 import logging
 import json
-import os
+from pathlib import Path
 from typing import Optional
 from collections import defaultdict
 
@@ -17,9 +17,17 @@ logger = logging.getLogger(__name__)
 class IndustryConfidenceCalibrator:
     """行业对比分析师置信度校准器"""
 
-    STATS_FILE = "config/industry_calibration_stats.json"
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    STATS_FILE = PROJECT_ROOT / "data" / "calibration" / "industry_calibration_stats.json"
+    LEGACY_STATS_FILE = PROJECT_ROOT / "config" / "industry_calibration_stats.json"
 
-    def __init__(self):
+    def __init__(self, stats_file: Optional[str | Path] = None,
+                 legacy_stats_file: Optional[str | Path] = None):
+        self.stats_file = Path(stats_file) if stats_file else self.STATS_FILE
+        self.legacy_stats_file = (
+            Path(legacy_stats_file) if legacy_stats_file else self.LEGACY_STATS_FILE
+        )
+
         self._confidence_bins = {
             "0.0-0.2": {"total": 0, "correct": 0},
             "0.2-0.4": {"total": 0, "correct": 0},
@@ -159,8 +167,9 @@ class IndustryConfidenceCalibrator:
     def _load_stats(self):
         """从文件加载统计"""
         try:
-            if os.path.exists(self.STATS_FILE):
-                with open(self.STATS_FILE, "r") as f:
+            source = self.stats_file if self.stats_file.exists() else self.legacy_stats_file
+            if source.exists():
+                with open(source, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self._confidence_bins = data.get("confidence_bins", self._confidence_bins)
                 self._industry_buckets = defaultdict(
@@ -174,10 +183,8 @@ class IndustryConfidenceCalibrator:
     def _save_stats(self):
         """保存统计到文件"""
         try:
-            cache_dir = os.path.dirname(self.STATS_FILE)
-            if cache_dir and not os.path.exists(cache_dir):
-                os.makedirs(cache_dir, exist_ok=True)
-            with open(self.STATS_FILE, "w") as f:
+            self.stats_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.stats_file, "w", encoding="utf-8") as f:
                 json.dump({
                     "confidence_bins": self._confidence_bins,
                     "industry_buckets": dict(self._industry_buckets),

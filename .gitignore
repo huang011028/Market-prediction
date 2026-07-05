@@ -8,6 +8,8 @@ __pycache__/
 dist/
 build/
 .eggs/
+.pytest_cache/
+.pytest-tmp/
 
 # 虚拟环境
 venv/
@@ -36,6 +38,11 @@ logs/
 
 # 缓存
 data/cache/
+data/calibration/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+config/*calibration_stats.json
 .cache/
 
 # Jupyter

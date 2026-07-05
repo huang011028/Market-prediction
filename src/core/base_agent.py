@@ -274,6 +274,9 @@ class BaseAgent(ABC):
                 key_factors=data.get("key_factors", []),
                 risks=data.get("risks", []),
                 data_summary=data.get("data_summary", {}),
+                status=data.get("status", "ok"),
+                error_message=data.get("error_message"),
+                data_quality_score=float(data.get("data_quality_score", 1.0)),
             )
 
         except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
@@ -288,6 +291,9 @@ class BaseAgent(ABC):
                 confidence=0.0,
                 reasoning=content,
                 key_factors=["LLM 返回格式异常，请查看 reasoning 字段"],
+                status="degraded",
+                error_message="LLM 返回格式异常",
+                data_quality_score=0.0,
             )
 
     # ================================================================
@@ -304,6 +310,10 @@ class BaseAgent(ABC):
             confidence=0.0,
             reasoning=reason,
             risks=[reason],
+            status="failed",
+            error_message=reason,
+            data_quality_score=0.0,
+            data_summary={"error": reason},
         )
 
     # ================================================================

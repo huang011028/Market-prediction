@@ -10,6 +10,8 @@
 const API_BASE = '';  // 同源部署
 let currentResult = null;
 let agentsInfo = [];
+let currentJobId = null;
+let currentPollTimer = null;
 
 // ============================================================
 // 初始化
@@ -58,9 +60,11 @@ function initTabs() {
 
 function initInput() {
     const btn = document.getElementById('analyzeBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
     const input = document.getElementById('targetInput');
 
     btn.addEventListener('click', startAnalysis);
+    cancelBtn.addEventListener('click', cancelAnalysis);
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') startAnalysis();
     });
@@ -80,6 +84,8 @@ function initQuickButtons() {
 // ============================================================
 
 async function startAnalysis() {
+    if (currentJobId) return;
+
     const target = document.getElementById('targetInput').value.trim();
     if (!target) {
         showError('请输入股票代码或公司名称');
@@ -100,7 +106,7 @@ async function startAnalysis() {
     hideResult();
 
     try {
-        const response = await fetch(`${API_BASE}/api/analyze`, {
+        const response = await fetch(`${API_BASE}/api/analyze/async`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ target, timeframe, skip_agents: skipAgents }),
@@ -111,14 +117,82 @@ async function startAnalysis() {
             throw new Error(err.detail || '分析失败');
         }
 
-        const result = await response.json();
-        currentResult = result;
-        renderResult(result);
-        hideLoading();
-        showResult();
+        const job = await response.json();
+        currentJobId = job.job_id;
+        updateProgress(job.progress, job.message);
+        pollAnalysisJob(job.job_id);
     } catch (error) {
         hideLoading();
         showError(error.message);
+    }
+}
+
+async function pollAnalysisJob(jobId) {
+    clearPollTimer();
+
+    const poll = async () => {
+        try {
+            const response = await fetch(`${API_BASE}/api/jobs/${jobId}`);
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || '任务状态获取失败');
+            }
+
+            const job = await response.json();
+            updateProgress(job.progress, job.message);
+
+            if (job.status === 'completed') {
+                clearPollTimer();
+                currentJobId = null;
+                currentResult = job.result;
+                renderResult(job.result);
+                hideLoading();
+                showResult();
+                return;
+            }
+
+            if (job.status === 'failed') {
+                clearPollTimer();
+                currentJobId = null;
+                hideLoading();
+                showError(job.error || '分析失败');
+                return;
+            }
+
+            if (job.status === 'cancelled') {
+                clearPollTimer();
+                currentJobId = null;
+                hideLoading();
+                showError('分析任务已取消');
+            }
+        } catch (error) {
+            clearPollTimer();
+            currentJobId = null;
+            hideLoading();
+            showError(error.message);
+        }
+    };
+
+    await poll();
+    if (currentJobId === jobId) {
+        currentPollTimer = setInterval(poll, 1200);
+    }
+}
+
+async function cancelAnalysis() {
+    if (!currentJobId) return;
+    try {
+        updateProgress(0, '正在取消任务...');
+        await fetch(`${API_BASE}/api/jobs/${currentJobId}`, { method: 'DELETE' });
+    } catch (error) {
+        showError(`取消失败: ${error.message}`);
+    }
+}
+
+function clearPollTimer() {
+    if (currentPollTimer) {
+        clearInterval(currentPollTimer);
+        currentPollTimer = null;
     }
 }
 
@@ -155,7 +229,10 @@ function renderResult(result) {
     document.getElementById('confidenceValue').textContent = `${Math.round(conf * 100)}%`;
 
     // 标的
-    document.getElementById('reportTarget').textContent = `${result.target} · ${result.timeframe}`;
+    const targetInfo = result.target_info || {};
+    const targetLabel = targetInfo.display_name || result.resolved_target || result.target;
+    const marketLabel = targetInfo.market ? ` · ${targetInfo.market}` : '';
+    document.getElementById('reportTarget').textContent = `${targetLabel}${marketLabel} · ${result.timeframe}`;
 
     // 汇总文字
     const summaryEl = document.getElementById('reportSummary');
@@ -165,9 +242,21 @@ function renderResult(result) {
     document.getElementById('elapsedTime').textContent = `⏱ 耗时 ${result.elapsed_seconds}s`;
     document.getElementById('predictionId').textContent = result.prediction_id
         ? `ID: ${result.prediction_id.slice(0, 8)}` : '';
+    document.getElementById('generatedAt').textContent = result.generated_at
+        ? `生成时间 ${formatDate(result.generated_at)}` : '';
+    document.getElementById('resultDisclaimer').textContent = result.disclaimer || '本项目仅供学习和研究使用，不构成任何投资建议。';
+    renderPriceTrend(
+        result.price_trend || [],
+        result.intraday_trend || [],
+        result.intraday_meta || {},
+        result.target_info || {},
+        result.agent_results || [],
+    );
 
     // Agent 结果
     renderAgentCards(result.agent_results);
+    renderDataQuality(result.data_quality_summary || []);
+    renderFailedAgents(result.failed_agents || []);
 
     // 分歧点
     if (report.disagreements && report.disagreements.length > 0) {
@@ -190,14 +279,346 @@ function renderResult(result) {
     }
 }
 
+function renderPriceTrend(dailyPoints, intradayPoints, intradayMeta, targetInfo, agentResults = []) {
+    const card = document.getElementById('priceTrendCard');
+    const chart = document.getElementById('priceTrendChart');
+    const meta = document.getElementById('priceTrendMeta');
+    const evidence = document.getElementById('priceTrendEvidence');
+    const modeWrap = document.getElementById('trendMode');
+    const intradayBtn = document.getElementById('trendModeIntraday');
+    const dailyBtn = document.getElementById('trendModeDaily');
+
+    const hasIntraday = Array.isArray(intradayPoints) && intradayPoints.length >= 2;
+    const hasDaily = Array.isArray(dailyPoints) && dailyPoints.length >= 2;
+
+    if (!hasIntraday && !hasDaily) {
+        card.style.display = 'none';
+        chart.innerHTML = '';
+        meta.textContent = '';
+        if (evidence) evidence.innerHTML = '';
+        return;
+    }
+
+    card.style.display = 'block';
+    const technicalSummary = extractTechnicalSummary(agentResults);
+    const technicalSnapshot = technicalSummary?.technical_snapshot || null;
+    const intradaySignals = technicalSummary?.intraday_signals || {};
+
+    if (modeWrap) modeWrap.style.display = hasIntraday && hasDaily ? 'flex' : 'none';
+    const defaultMode = hasIntraday ? 'intraday' : 'daily';
+    const draw = (mode) => {
+        const useIntraday = mode === 'intraday' && hasIntraday;
+        const points = useIntraday ? intradayPoints : dailyPoints;
+        const validPoints = points.filter(p => Number.isFinite(Number(p.close)));
+        if (validPoints.length < 2) return;
+
+        if (intradayBtn && dailyBtn) {
+            intradayBtn.classList.toggle('active', useIntraday);
+            dailyBtn.classList.toggle('active', !useIntraday);
+        }
+
+        drawTrendChart(validPoints, targetInfo, {
+            mode: useIntraday ? 'intraday' : 'daily',
+            intradayMeta: intradayMeta || {},
+            snapshot: technicalSnapshot,
+        });
+    };
+
+    if (intradayBtn) intradayBtn.onclick = () => draw('intraday');
+    if (dailyBtn) dailyBtn.onclick = () => draw('daily');
+    draw(defaultMode);
+
+    renderTrendEvidence(evidence, technicalSnapshot, intradayMeta || {}, intradaySignals);
+}
+
+function drawTrendChart(points, targetInfo, options = {}) {
+    const chart = document.getElementById('priceTrendChart');
+    const meta = document.getElementById('priceTrendMeta');
+    const closes = points.map(p => Number(p.close)).filter(v => Number.isFinite(v));
+    const rawMin = Math.min(...closes);
+    const rawMax = Math.max(...closes);
+    const rawRange = rawMax - rawMin || Math.max(rawMax * 0.01, 1);
+    const paddedMin = rawMin - rawRange * 0.08;
+    const paddedMax = rawMax + rawRange * 0.08;
+    const yTicks = buildNiceTicks(paddedMin, paddedMax, 5);
+    const min = yTicks[0];
+    const max = yTicks[yTicks.length - 1];
+    const first = closes[0];
+    const last = closes[closes.length - 1];
+    const totalChange = first ? ((last / first - 1) * 100) : 0;
+    const dirClass = totalChange > 0 ? 'bullish' : totalChange < 0 ? 'bearish' : 'neutral';
+    const firstLabel = pointLabel(points[0]);
+    const lastLabel = pointLabel(points[points.length - 1]);
+    const modeLabel = options.mode === 'intraday'
+        ? `${options.intradayMeta?.interval || '5m'} 分钟`
+        : '日线';
+
+    meta.innerHTML = `
+        <span>${escapeHtml(targetInfo.display_name || targetInfo.symbol || '')}</span>
+        <span>${escapeHtml(modeLabel)}</span>
+        <span class="${dirClass}">${totalChange >= 0 ? '+' : ''}${totalChange.toFixed(2)}%</span>
+        <span>${escapeHtml(firstLabel)} 至 ${escapeHtml(lastLabel)}</span>
+    `;
+
+    const width = 780;
+    const height = 300;
+    const padLeft = 76;
+    const padRight = 30;
+    const padTop = 26;
+    const padBottom = 54;
+    const plotWidth = width - padLeft - padRight;
+    const plotHeight = height - padTop - padBottom;
+    const range = max - min || 1;
+    const xStep = plotWidth / (points.length - 1);
+    const pointCoords = points.map((p, i) => {
+        const x = padLeft + i * xStep;
+        const y = padTop + (1 - ((Number(p.close) - min) / range)) * plotHeight;
+        return { x, y, point: p, close: Number(p.close) };
+    });
+    const coords = pointCoords.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    const areaCoords = `${padLeft},${height - padBottom} ${coords} ${width - padRight},${height - padBottom}`;
+    const lineColor = totalChange >= 0 ? 'var(--bullish)' : 'var(--bearish)';
+    const xTicks = buildXAxisTicks(points, options.mode, 5);
+    const lastPoint = pointCoords[pointCoords.length - 1];
+
+    const yGrid = yTicks.map(tick => {
+        const y = padTop + (1 - ((tick - min) / range)) * plotHeight;
+        return `
+            <line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${width - padRight}" y2="${y.toFixed(1)}" class="trend-grid" />
+            <text x="${padLeft - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end" class="trend-y-label">${formatPriceTick(tick)}</text>
+        `;
+    }).join('');
+
+    const xGrid = xTicks.map(item => {
+        const x = padLeft + item.index * xStep;
+        const anchor = item.index === 0 ? 'start' : item.index === points.length - 1 ? 'end' : 'middle';
+        return `
+            <line x1="${x.toFixed(1)}" y1="${height - padBottom}" x2="${x.toFixed(1)}" y2="${height - padBottom + 5}" class="trend-tick" />
+            <text x="${x.toFixed(1)}" y="${height - 22}" text-anchor="${anchor}" class="trend-x-label">${escapeHtml(item.label)}</text>
+        `;
+    }).join('');
+    const supportResistance = options.snapshot?.support_resistance || {};
+    const referenceLines = [
+        { value: supportResistance.nearest_support, label: '支撑', className: 'support' },
+        { value: supportResistance.nearest_resistance, label: '压力', className: 'resistance' },
+    ].map(item => {
+        if (item.value == null) return '';
+        const value = Number(item.value);
+        if (!Number.isFinite(value) || value < min || value > max) return '';
+        const y = padTop + (1 - ((value - min) / range)) * plotHeight;
+        const labelY = Math.max(padTop + 12, Math.min(height - padBottom - 6, y - 6));
+        return `
+            <line x1="${padLeft}" y1="${y.toFixed(1)}" x2="${width - padRight}" y2="${y.toFixed(1)}" class="trend-reference ${item.className}" />
+            <text x="${width - padRight - 6}" y="${labelY.toFixed(1)}" text-anchor="end" class="trend-reference-label ${item.className}">${escapeHtml(item.label)} ${formatPriceTick(value)}</text>
+        `;
+    }).join('');
+
+    const hotPoints = pointCoords.map(item => `
+        <circle cx="${item.x.toFixed(1)}" cy="${item.y.toFixed(1)}" r="6" class="trend-hit">
+            <title>${escapeHtml(pointTooltip(item.point, options.mode))}</title>
+        </circle>
+    `).join('');
+
+    chart.innerHTML = `
+        <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="近期收盘价走势">
+            <rect x="${padLeft}" y="${padTop}" width="${plotWidth}" height="${plotHeight}" class="trend-plot-bg" />
+            ${yGrid}
+            <line x1="${padLeft}" y1="${padTop}" x2="${padLeft}" y2="${height - padBottom}" class="trend-axis" />
+            <line x1="${padLeft}" y1="${height - padBottom}" x2="${width - padRight}" y2="${height - padBottom}" class="trend-axis" />
+            ${xGrid}
+            ${referenceLines}
+            <polygon points="${areaCoords}" class="trend-area ${dirClass}" />
+            <polyline points="${coords}" fill="none" stroke="${lineColor}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />
+            ${hotPoints}
+            <circle cx="${lastPoint.x.toFixed(1)}" cy="${lastPoint.y.toFixed(1)}" r="4.5" fill="${lineColor}" class="trend-last-point" />
+            <text x="${width - padRight}" y="${Math.max(padTop + 14, lastPoint.y - 10).toFixed(1)}" text-anchor="end" class="trend-last-label">${last.toFixed(2)}</text>
+        </svg>
+    `;
+}
+
+function pointLabel(point) {
+    return point?.time || point?.date || '';
+}
+
+function buildNiceTicks(min, max, count) {
+    const span = max - min || 1;
+    const step = niceNumber(span / Math.max(1, count - 1), true);
+    const tickMin = Math.floor(min / step) * step;
+    const tickMax = Math.ceil(max / step) * step;
+    const ticks = [];
+    for (let value = tickMin; value <= tickMax + step * 0.5; value += step) {
+        ticks.push(Number(value.toFixed(6)));
+        if (ticks.length > 8) break;
+    }
+    return ticks.length >= 2 ? ticks : [min, max];
+}
+
+function niceNumber(value, round) {
+    const exponent = Math.floor(Math.log10(value || 1));
+    const fraction = value / Math.pow(10, exponent);
+    let niceFraction;
+    if (round) {
+        if (fraction < 1.5) niceFraction = 1;
+        else if (fraction < 3) niceFraction = 2;
+        else if (fraction < 7) niceFraction = 5;
+        else niceFraction = 10;
+    } else {
+        if (fraction <= 1) niceFraction = 1;
+        else if (fraction <= 2) niceFraction = 2;
+        else if (fraction <= 5) niceFraction = 5;
+        else niceFraction = 10;
+    }
+    return niceFraction * Math.pow(10, exponent);
+}
+
+function formatPriceTick(value) {
+    const abs = Math.abs(value);
+    if (abs >= 100) return value.toFixed(0);
+    if (abs >= 10) return value.toFixed(2);
+    return value.toFixed(3);
+}
+
+function buildXAxisTicks(points, mode, maxTicks = 5) {
+    const count = Math.min(maxTicks, points.length);
+    const indexes = new Set();
+    for (let i = 0; i < count; i++) {
+        indexes.add(Math.round((points.length - 1) * (i / Math.max(1, count - 1))));
+    }
+    return Array.from(indexes).sort((a, b) => a - b).map(index => ({
+        index,
+        label: formatXAxisLabel(points[index], mode, points),
+    }));
+}
+
+function formatXAxisLabel(point, mode, allPoints) {
+    const raw = pointLabel(point);
+    if (!raw) return '';
+    if (mode === 'intraday') {
+        const firstDate = (allPoints[0]?.date || pointLabel(allPoints[0]).slice(0, 10));
+        const date = point?.date || raw.slice(0, 10);
+        const time = raw.includes(' ') ? raw.split(' ')[1] : raw.slice(11, 16);
+        return date === firstDate ? time : `${date.slice(5)} ${time}`;
+    }
+    return raw.slice(5, 10);
+}
+
+function pointTooltip(point, mode) {
+    const label = pointLabel(point);
+    const close = Number(point?.close);
+    const change = Number(point?.change_pct);
+    const closeText = Number.isFinite(close) ? close.toFixed(2) : 'N/A';
+    const changeText = Number.isFinite(change) ? `${change >= 0 ? '+' : ''}${change.toFixed(2)}%` : 'N/A';
+    return `${mode === 'intraday' ? '时间' : '日期'}: ${label}\n收盘: ${closeText}\n区间变化: ${changeText}`;
+}
+
+function extractTechnicalSummary(agentResults) {
+    const tech = (agentResults || []).find(r => r?.data_summary?.technical_snapshot);
+    return tech?.data_summary || null;
+}
+
+function extractTechnicalSnapshot(agentResults) {
+    const tech = (agentResults || []).find(r =>
+        (r.agent_name || '').includes('股价') || (r.agent_name || '').includes('技术')
+    );
+    return tech?.data_summary?.technical_snapshot || null;
+}
+
+function renderTrendEvidence(container, snapshot, intradayMeta = {}, intradaySignals = {}) {
+    if (!container) return;
+    if (!snapshot) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const trend = snapshot.trend_regime || {};
+    const volume = snapshot.volume_signals || {};
+    const sr = snapshot.support_resistance || {};
+    const risk = snapshot.risk_levels || {};
+    const model = snapshot.confidence_model || {};
+
+    const items = [
+        { label: '趋势', value: formatTrendState(trend.short_term, trend.ma_alignment) },
+        { label: '量能', value: formatVolumeState(volume) },
+        { label: '分钟最新', value: intradayMeta.latest_time || '暂无' },
+        { label: '支撑', value: formatPrice(sr.nearest_support, sr.support_distance_pct) },
+        { label: '压力', value: formatPrice(sr.nearest_resistance, sr.resistance_distance_pct) },
+        { label: '风险位', value: risk.stop_loss_reference ? `${risk.stop_loss_reference}` : 'N/A' },
+        { label: '突破位', value: risk.breakout_reference ? `${risk.breakout_reference}` : 'N/A' },
+        { label: '证据置信', value: model.technical_confidence != null ? `${Math.round(model.technical_confidence * 100)}%` : 'N/A' },
+    ];
+
+    items.splice(3, 0, { label: '盘中信号', value: formatIntradaySignal(intradaySignals) });
+
+    const evidence = snapshot.evidence || {};
+    const intradayEvidence = intradaySignals?.evidence || {};
+    const bullets = [
+        ...(evidence.bullish || []).slice(0, 2).map(text => ({ text, tone: 'bullish' })),
+        ...(evidence.bearish || []).slice(0, 2).map(text => ({ text, tone: 'bearish' })),
+        ...(intradayEvidence.bullish || []).slice(0, 1).map(text => ({ text: `盘中: ${text}`, tone: 'bullish' })),
+        ...(intradayEvidence.bearish || []).slice(0, 1).map(text => ({ text: `盘中: ${text}`, tone: 'bearish' })),
+        ...(evidence.neutral || []).slice(0, 2).map(text => ({ text, tone: 'neutral' })),
+    ].slice(0, 5);
+
+    container.innerHTML = `
+        <div class="trend-evidence-grid">
+            ${items.map(item => `
+                <div class="trend-evidence-item">
+                    <span>${escapeHtml(item.label)}</span>
+                    <strong>${escapeHtml(item.value)}</strong>
+                </div>
+            `).join('')}
+        </div>
+        ${bullets.length ? `
+            <div class="trend-evidence-bullets">
+                ${bullets.map(item => `<span class="${item.tone}">${escapeHtml(item.text)}</span>`).join('')}
+            </div>
+        ` : ''}
+    `;
+}
+
+function formatTrendState(shortTerm, maAlignment) {
+    const trendMap = { up: '上行', down: '下行', sideways: '震荡', unknown: '未知' };
+    const maMap = { bullish: '多头', bearish: '空头', tangled: '缠绕' };
+    return `${trendMap[shortTerm] || shortTerm || '未知'} / ${maMap[maAlignment] || maAlignment || '未知'}`;
+}
+
+function formatVolumeState(volume) {
+    const trendMap = { expanding: '放大', shrinking: '缩量', neutral: '中性' };
+    const ratio = volume.volume_ratio_20d != null ? ` ${Number(volume.volume_ratio_20d).toFixed(2)}x` : '';
+    return `${trendMap[volume.volume_trend] || volume.volume_trend || '未知'}${ratio}`;
+}
+
+function formatIntradaySignal(signals) {
+    if (!signals || !signals.available) return '暂无';
+    const stateMap = {
+        strong_up: '盘中偏强',
+        selloff: '盘中偏弱',
+        mixed: '多空拉扯',
+        range_bound: '窄幅震荡',
+        unavailable: '暂无',
+    };
+    const change = Number(signals.change_pct);
+    const changeText = Number.isFinite(change) ? ` ${change >= 0 ? '+' : ''}${change.toFixed(2)}%` : '';
+    const vwap = Number(signals.latest_vs_vwap_pct);
+    const vwapText = Number.isFinite(vwap) ? ` / 均价${vwap >= 0 ? '+' : ''}${vwap.toFixed(2)}%` : '';
+    return `${stateMap[signals.state] || signals.state || '暂无'}${changeText}${vwapText}`;
+}
+
+function formatPrice(price, distance) {
+    if (price == null) return 'N/A';
+    const dist = distance == null ? '' : ` (${Number(distance).toFixed(2)}%)`;
+    return `${Number(price).toFixed(2)}${dist}`;
+}
+
 function renderAgentCards(results) {
     const grid = document.getElementById('agentGrid');
     grid.innerHTML = '';
 
     results.forEach((r, i) => {
         const dir = r.direction || 'neutral';
+        const status = getAgentStatus(r.agent_name);
         const card = document.createElement('div');
-        card.className = `agent-card ${dir}`;
+        card.className = `agent-card ${dir} ${status.status !== 'ok' ? 'degraded' : ''}`;
         card.style.animationDelay = `${i * 0.05}s`;
 
         const mag = r.magnitude;
@@ -210,11 +631,17 @@ function renderAgentCards(results) {
 
         const factors = (r.key_factors || []).slice(0, 3)
             .map(f => `<span class="agent-factor">${escapeHtml(f)}</span>`).join('');
+        const statusBadge = status.status !== 'ok'
+            ? `<span class="agent-status ${status.status}">${status.status === 'failed' ? '失败' : '降级'}</span>`
+            : '';
 
         card.innerHTML = `
             <div class="agent-card-header">
                 <span class="agent-name">${escapeHtml(r.agent_name)}</span>
-                <span class="agent-direction ${dir}">${dirLabel[dir] || dir}</span>
+                <div class="agent-header-badges">
+                    ${statusBadge}
+                    <span class="agent-direction ${dir}">${dirLabel[dir] || dir}</span>
+                </div>
             </div>
             <div class="agent-magnitude ${dir}">${magStr}</div>
             <div class="agent-confidence">
@@ -230,6 +657,48 @@ function renderAgentCards(results) {
         card.addEventListener('click', () => showAgentDetail(r));
         grid.appendChild(card);
     });
+}
+
+function getAgentStatus(agentName) {
+    const status = (currentResult?.agent_statuses || []).find(s => s.agent_name === agentName);
+    return status || { status: 'ok', reason: '完成' };
+}
+
+function renderDataQuality(items) {
+    const card = document.getElementById('dataQualityCard');
+    const list = document.getElementById('dataQualityList');
+    if (!items.length) {
+        card.style.display = 'none';
+        return;
+    }
+
+    card.style.display = 'block';
+    list.innerHTML = items.map(item => `
+        <div class="quality-item">
+            <div class="quality-agent">${escapeHtml(item.agent_name)}</div>
+            <div class="quality-line"><span>来源</span>${escapeHtml(item.source)}</div>
+            <div class="quality-line"><span>新鲜度</span>${escapeHtml(item.freshness)}</div>
+            <div class="quality-line"><span>质量</span>${escapeHtml(item.quality)}</div>
+            <div class="quality-note">${escapeHtml(item.note)}</div>
+        </div>
+    `).join('');
+}
+
+function renderFailedAgents(items) {
+    const card = document.getElementById('failedAgentsCard');
+    const list = document.getElementById('failedAgentsList');
+    if (!items.length) {
+        card.style.display = 'none';
+        return;
+    }
+
+    card.style.display = 'block';
+    list.innerHTML = items.map(item => `
+        <div class="failure-item">
+            <div class="failure-agent">${escapeHtml(item.agent_name)} · ${escapeHtml(item.status)}</div>
+            <div class="failure-reason">${escapeHtml(item.reason)}</div>
+        </div>
+    `).join('');
 }
 
 // ============================================================
@@ -252,8 +721,17 @@ function showAgentDetail(result) {
         .map(f => `<li>${escapeHtml(f)}</li>`).join('');
     const risks = (result.risks || [])
         .map(r => `<li>${escapeHtml(r)}</li>`).join('');
+    const status = getAgentStatus(result.agent_name);
+    const dataSummary = result.data_summary && Object.keys(result.data_summary).length
+        ? JSON.stringify(result.data_summary, null, 2)
+        : '';
 
     body.innerHTML = `
+        ${status.status !== 'ok' ? `
+        <div class="detail-section detail-warning">
+            <h4>执行状态</h4>
+            <p><strong>${escapeHtml(status.status)}</strong> · ${escapeHtml(status.reason)}</p>
+        </div>` : ''}
         <div class="detail-section">
             <h4>预测结果</h4>
             <p><strong>方向:</strong> ${result.direction} | <strong>幅度:</strong> ${magStr} | <strong>置信度:</strong> ${Math.round((result.confidence || 0) * 100)}%</p>
@@ -271,6 +749,11 @@ function showAgentDetail(result) {
         <div class="detail-section">
             <h4>风险提示</h4>
             <ul class="detail-risks-list">${risks}</ul>
+        </div>` : ''}
+        ${dataSummary ? `
+        <div class="detail-section">
+            <h4>数据摘要</h4>
+            <pre class="detail-json">${escapeHtml(dataSummary)}</pre>
         </div>` : ''}
     `;
 
@@ -348,13 +831,38 @@ async function loadHistoryDetail(id) {
         const body = document.getElementById('modalBody');
 
         title.textContent = `📋 ${data.target} — 历史预测详情`;
+        const failedAgents = (data.agents_failed || [])
+            .map(name => `<span class="history-agent-chip failed">${escapeHtml(name)}</span>`)
+            .join('');
+        const usedAgents = (data.agents_used || [])
+            .map(name => `<span class="history-agent-chip">${escapeHtml(name)}</span>`)
+            .join('');
+        const reportBlock = data.report_md
+            ? `<pre class="history-report-md">${escapeHtml(data.report_md)}</pre>`
+            : `<div class="detail-reasoning">${formatSummary(data.summary || '暂无完整报告')}</div>`;
+
         body.innerHTML = `
+            <div class="disclaimer-banner modal-disclaimer">${escapeHtml(data.disclaimer || '本项目仅供学习和研究使用，不构成任何投资建议。')}</div>
             <div class="detail-section">
                 <h4>预测信息</h4>
                 <p><strong>标的:</strong> ${escapeHtml(data.target)} | <strong>周期:</strong> ${escapeHtml(data.timeframe)}</p>
-                <p><strong>方向:</strong> ${data.direction} | <strong>置信度:</strong> ${Math.round((data.confidence || 0) * 100)}%</p>
-                <p><strong>时间:</strong> ${data.predicted_at || 'N/A'}</p>
+                <p><strong>方向:</strong> ${escapeHtml(data.direction)} | <strong>置信度:</strong> ${Math.round((data.confidence || 0) * 100)}%</p>
+                <p><strong>预测时间:</strong> ${formatDate(data.predicted_at)} | <strong>有效期:</strong> ${formatDate(data.valid_until)}</p>
+                <p><strong>耗时:</strong> ${data.elapsed_seconds || 0}s | <strong>模型:</strong> ${escapeHtml(data.llm_model || 'N/A')}</p>
                 ${data.verified ? `<p><strong>实际涨跌:</strong> ${data.actual_change_pct}% | <strong>方向:</strong> ${data.direction_correct ? '✅ 正确' : '❌ 错误'}</p>` : '<p><em>尚未验证</em></p>'}
+            </div>
+            <div class="detail-section">
+                <h4>参与 Agent</h4>
+                <div class="history-agent-list">${usedAgents || '<span class="history-agent-chip">无记录</span>'}</div>
+            </div>
+            ${failedAgents ? `
+            <div class="detail-section">
+                <h4>失败或降级 Agent</h4>
+                <div class="history-agent-list">${failedAgents}</div>
+            </div>` : ''}
+            <div class="detail-section">
+                <h4>完整报告</h4>
+                ${reportBlock}
             </div>
         `;
         modal.style.display = 'flex';
@@ -442,8 +950,10 @@ async function checkHealth() {
 function showLoading() {
     document.getElementById('loadingSection').style.display = 'block';
     document.getElementById('analyzeBtn').disabled = true;
+    document.getElementById('cancelBtn').style.display = 'inline-flex';
     document.querySelector('.btn-text').style.display = 'none';
     document.querySelector('.btn-loading').style.display = 'inline';
+    updateProgress(0, '正在创建分析任务...');
 
     // 模拟进度
     let progress = 0;
@@ -462,7 +972,10 @@ function showLoading() {
     const interval = setInterval(() => {
         progress += Math.random() * 15;
         if (progress > 90) progress = 90;
+        const currentWidth = parseFloat(fill.dataset.progress || '0');
+        if (currentWidth >= progress) return;
         fill.style.width = `${progress}%`;
+        fill.dataset.progress = `${progress}`;
         const stepIdx = Math.min(Math.floor(progress / 15), steps.length - 1);
         text.textContent = steps[stepIdx];
     }, 800);
@@ -474,14 +987,25 @@ function showLoading() {
 function hideLoading() {
     document.getElementById('loadingSection').style.display = 'none';
     document.getElementById('analyzeBtn').disabled = false;
+    document.getElementById('cancelBtn').style.display = 'none';
     document.querySelector('.btn-text').style.display = 'inline';
     document.querySelector('.btn-loading').style.display = 'none';
+    clearPollTimer();
 
     if (window._loadingInterval) {
         clearInterval(window._loadingInterval);
         window._loadingInterval = null;
     }
-    document.getElementById('progressFill').style.width = '0%';
+    updateProgress(0, '正在获取数据...');
+}
+
+function updateProgress(progress, message) {
+    const fill = document.getElementById('progressFill');
+    const text = document.getElementById('progressText');
+    const value = Math.max(0, Math.min(100, Number(progress) || 0));
+    fill.style.width = `${value}%`;
+    fill.dataset.progress = `${value}`;
+    text.textContent = message || '正在处理...';
 }
 
 function showResult() {
@@ -515,6 +1039,11 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+function formatDate(value) {
+    if (!value) return 'N/A';
+    return String(value).slice(0, 19).replace('T', ' ');
 }
 
 function formatSummary(text) {

@@ -20,6 +20,7 @@ from src.core.base_agent import BaseAgent
 from src.core.llm_client import LLMClient
 from src.core.result import AnalysisResult, Direction, Magnitude
 from src.data.fundamental_fetcher import FundamentalFetcher
+from src.data.symbol_resolver import resolve_symbol, identify_market
 from src.prompts.fundamental_prompts import (
     FUNDAMENTAL_SYSTEM_PROMPT,
     A_SHARE_FUNDAMENTAL_APPENDIX,
@@ -54,63 +55,16 @@ class FundamentalAnalyst(BaseAgent):
 
     async def gather_data(self, target: str, timeframe: str) -> dict:
         """获取增强版财务数据（含预处理管线结果）"""
-        market = self._identify_market(target)
-        data = await self.fetcher.fetch_enhanced(target, market)
+        info = resolve_symbol(target)
+        market = info.market
+        data = await self.fetcher.fetch_enhanced(info.symbol, market)
+        data["_resolved_symbol"] = info.symbol
+        data["_resolved_name"] = info.name
         return data
 
     def _identify_market(self, symbol: str) -> str:
         """识别市场，支持代码和中文名"""
-        s = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "")
-
-        # 1. 纯数字代码
-        if s.isdigit():
-            if len(s) <= 5:
-                return "HK"
-            return "A"
-
-        # 2. 已知中文港股名映射
-        HK_NAME_MAP = {
-            "美团": "3690", "美团-W": "3690",
-            "腾讯": "0700", "腾讯控股": "0700",
-            "阿里巴巴": "9988", "阿里": "9988",
-            "百度": "9888",
-            "京东": "9618",
-            "小米": "1810", "小米集团": "1810",
-            "快手": "1024",
-            "网易": "9999",
-            "哔哩哔哩": "9626", "B站": "9626",
-            "拼多多": "PDD",
-            "快手-W": "1024",
-            "商汤": "00020",
-            "海底捞": "6862",
-            "安踏": "2020",
-            "李宁": "2331",
-            "海底捞": "6862",
-            "华润啤酒": "00291",
-            "青岛啤酒": "00168",
-            "海底捞": "6862",
-            "小米": "1810",
-            "中芯国际": "00981",
-            "药明生物": "2269",
-            "信达生物": "1801",
-            "百济神州": "6160",
-            "君实生物": "1877",
-        }
-        if s in HK_NAME_MAP:
-            return "HK"
-
-        # 3. 检查是否为纯英文字母（美股代码）
-        if s.isalpha():
-            return "US"
-
-        # 4. 尝试从东方财富港股代码表匹配中文名
-        from src.data.industry_preprocessor import EXTENDED_KNOWN_INDUSTRIES
-        # 反向查找: 中文名 → 代码
-        for code, ind in EXTENDED_KNOWN_INDUSTRIES.items():
-            pass  # 这个映射是 A 股的，不适用
-
-        # 默认为 US
-        return "US"
+        return identify_market(symbol)
 
     def _get_system_prompt(self) -> str:
         return FUNDAMENTAL_SYSTEM_PROMPT
@@ -179,7 +133,9 @@ class FundamentalAnalyst(BaseAgent):
                 "请基于有限数据给出判断，在 reasoning 中标注数据局限性，并降低 confidence。"
             ).format(
                 dq.get("financial_fields_filled", "?"),
+                dq.get("financial_fields_total", "?"),
                 dq.get("valuation_fields_filled", "?"),
+                dq.get("valuation_fields_total", "?"),
             )
 
         return f"""请基于以下基本面数据进行综合评估：

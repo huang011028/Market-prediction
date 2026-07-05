@@ -148,6 +148,30 @@ class TestBacktestConfig:
         )
         assert cfg.interval_days == 30
 
+    def test_horizon_days(self):
+        from src.core.backtester import Backtester
+
+        assert Backtester._horizon_days("短期(1周)") == 7
+        assert Backtester._horizon_days("中期(1月)") == 30
+        assert Backtester._horizon_days("长期(1季)") == 90
+
+    def test_historical_technical_agent_uses_snapshot(self):
+        import asyncio
+        from src.core.backtester import HistoricalTechnicalAnalyst
+
+        class DummyLLM:
+            pass
+
+        class DummyPriceData:
+            def to_agent_dict(self):
+                return {"price_summary": {"latest_close": 10.0}}
+
+        agent = HistoricalTechnicalAnalyst(DummyLLM(), DummyPriceData(), __import__("datetime").datetime(2025, 1, 2))
+        data = asyncio.run(agent.gather_data("000001", "短期(1周)"))
+
+        assert data["price_summary"]["latest_close"] == 10.0
+        assert data["_backtest_as_of"] == "2025-01-02"
+
 
 class TestBacktestReport:
     """回测报告测试"""

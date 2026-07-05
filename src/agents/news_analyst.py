@@ -26,6 +26,7 @@ from typing import Optional
 from src.core.base_agent import BaseAgent
 from src.core.llm_client import LLMClient
 from src.data.news_fetcher import NewsFetcher
+from src.data.symbol_resolver import resolve_symbol, identify_market
 from src.prompts.news_prompts import (
     NEWS_SYSTEM_PROMPT,
     SIGNAL_EXTRACTION_PROMPT,
@@ -73,18 +74,21 @@ class NewsAnalyst(BaseAgent):
             包含预处理摘要和新闻列表的字典
         """
         days = self._timeframe_to_days(timeframe)
-        market = self._identify_market(target)
+        info = resolve_symbol(target)
+        market = info.market
 
         try:
-            news_data = await self.news_fetcher.fetch(target, market, days)
+            news_data = await self.news_fetcher.fetch(info.symbol, market, days)
             result = news_data.to_agent_dict()
 
             # 添加市场信息（用于 prompt 选择）
             result["_market"] = market
+            result["_resolved_symbol"] = info.symbol
+            result["_resolved_name"] = info.name
 
             # 如果新闻数据不可用
             if news_data.news_source == "unavailable":
-                logger.warning(f"未能获取 {target} 的新闻数据，Agent 将基于知识库分析")
+                logger.warning(f"未能获取 {info.display_name} 的新闻数据，Agent 将基于知识库分析")
                 result["_warning"] = (
                     "新闻数据暂时不可用，以下分析基于 AI 知识库（非实时新闻），仅供参考"
                 )
@@ -110,13 +114,7 @@ class NewsAnalyst(BaseAgent):
 
     def _identify_market(self, symbol: str) -> str:
         """识别标的市场"""
-        symbol = symbol.strip().upper()
-        symbol_clean = symbol.replace(".HK", "").replace(".SZ", "").replace(".SS", "")
-        if symbol_clean.isdigit():
-            if len(symbol_clean) <= 5:
-                return "HK"
-            return "A"
-        return "US"
+        return identify_market(symbol)
 
     def _assess_data_quality(self, news_data) -> dict:
         """评估数据质量"""

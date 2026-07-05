@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
 import json
+from typing import Optional
 
 
 # ================================================================
@@ -91,6 +92,9 @@ class AnalysisResult:
 
     # --- 数据摘要 ---
     data_summary: dict = field(default_factory=dict)  # 使用的数据摘要
+    status: str = "ok"  # ok / degraded / failed
+    error_message: Optional[str] = None
+    data_quality_score: float = 1.0
 
     def validate(self) -> list[str]:
         """校验结果完整性
@@ -248,6 +252,19 @@ class FinalReport:
                 lines.append(f"- {d}")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _quality_tag(result: AnalysisResult) -> str:
+        """给 Markdown 表格生成稳定的质量标签。"""
+        if result.status == "failed":
+            return "❌ 失败"
+        if result.status == "degraded":
+            return "⚠️ 降级"
+        if result.confidence <= 0.15 or result.data_quality_score < 0.4:
+            return "⚠️ 低可信"
+        if result.data_quality_score < 0.75:
+            return "⚠️ 数据一般"
+        return "✅ 正常"
 
     def to_dict(self) -> dict:
         """序列化为字典"""

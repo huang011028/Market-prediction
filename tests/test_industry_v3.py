@@ -12,6 +12,7 @@
 import pytest
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -27,6 +28,12 @@ from src.utils.industry_chain import (
     INDUSTRY_CATALOGS,
 )
 from src.utils.industry_calibrator import IndustryConfidenceCalibrator
+
+
+def _calibration_stats_path(name: str) -> Path:
+    path = Path(".pytest-tmp") / "calibration" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # ================================================================
@@ -220,8 +227,11 @@ class TestCatalystCalendar:
 
 
 class TestIndustryConfidenceCalibrator:
-    def setup_method(self):
-        self.calibrator = IndustryConfidenceCalibrator()
+    def setup_method(self, method):
+        self.calibrator = IndustryConfidenceCalibrator(
+            stats_file=_calibration_stats_path(f"industry_{method.__name__}.json"),
+            legacy_stats_file=_calibration_stats_path("missing_legacy.json"),
+        )
         # 清空所有桶以避免跨测试污染
         for key in self.calibrator._confidence_bins:
             self.calibrator._confidence_bins[key] = {"total": 0, "correct": 0}
@@ -324,7 +334,10 @@ class TestRound2Integration:
 
     def test_calibrator_full_cycle(self):
         """校准器完整周期"""
-        calibrator = IndustryConfidenceCalibrator()
+        calibrator = IndustryConfidenceCalibrator(
+            stats_file=_calibration_stats_path("industry_full_cycle.json"),
+            legacy_stats_file=_calibration_stats_path("missing_legacy.json"),
+        )
         # 清空状态
         for key in calibrator._confidence_bins:
             calibrator._confidence_bins[key] = {"total": 0, "correct": 0}

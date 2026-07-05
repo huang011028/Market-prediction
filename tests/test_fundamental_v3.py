@@ -11,12 +11,19 @@
 import pytest
 import sys
 import os
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.utils.fundamental_calibrator import FundamentalConfidenceCalibrator
 from src.utils.scorecard_optimizer import ScorecardWeightOptimizer, get_industry_benchmark, INDUSTRY_BENCHMARKS
 from src.data.hk_financial_source import _parse_aastocks_value
+
+
+def _calibration_stats_path(name: str) -> Path:
+    path = Path(".pytest-tmp") / "calibration" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # ================================================================
@@ -58,9 +65,12 @@ class TestParseAAStocksValue:
 
 
 class TestFundamentalConfidenceCalibrator:
-    def setup_method(self):
+    def setup_method(self, method):
         # 使用独立实例，避免文件状态污染
-        self.calibrator = FundamentalConfidenceCalibrator()
+        self.calibrator = FundamentalConfidenceCalibrator(
+            stats_file=_calibration_stats_path(f"fundamental_{method.__name__}.json"),
+            legacy_stats_file=_calibration_stats_path("missing_legacy.json"),
+        )
         # 清空所有桶
         for key in self.calibrator._confidence_bins:
             self.calibrator._confidence_bins[key] = {"total": 0, "correct": 0}
@@ -250,7 +260,10 @@ class TestRound2Integration:
 
     def test_calibrator_full_cycle(self):
         """校准器完整周期: 校准 → 验证 → 更新 → 再校准"""
-        calibrator = FundamentalConfidenceCalibrator()
+        calibrator = FundamentalConfidenceCalibrator(
+            stats_file=_calibration_stats_path("fundamental_full_cycle.json"),
+            legacy_stats_file=_calibration_stats_path("missing_legacy.json"),
+        )
         # 清空状态
         for key in calibrator._confidence_bins:
             calibrator._confidence_bins[key] = {"total": 0, "correct": 0}

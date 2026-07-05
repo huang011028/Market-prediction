@@ -5,26 +5,21 @@
 输出方向准确率、幅度命中率、置信度校准等统计。
 """
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
-from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Optional
 
-import pandas as pd
-
-from config.settings import get_settings
 from src.core.llm_client import LLMClient, create_llm_client
 from src.core.orchestrator import Orchestrator
 from src.agents.technical_analyst import TechnicalAnalyst
-from src.agents.fundamental_analyst import FundamentalAnalyst
 from src.agents.aggregator import Aggregator
 from src.data.price_fetcher import PriceFetcher
-from src.data.prediction_store import PredictionStore
 
 logger = logging.getLogger(__name__)
+
+AGENT_TECH = "近期股价分析师"
 
 
 @dataclass
@@ -141,12 +136,25 @@ class BacktestReport:
         return "\n".join(lines)
 
 
+class HistoricalTechnicalAnalyst(TechnicalAnalyst):
+    """回测专用技术面 Agent，使用已截断的历史 K 线快照。"""
+
+    def __init__(self, llm: LLMClient, price_data, as_of: datetime):
+        super().__init__(llm)
+        self._price_data = price_data
+        self._as_of = as_of
+
+    async def gather_data(self, target: str, timeframe: str) -> dict:
+        data = self._price_data.to_agent_dict()
+        data["_backtest_as_of"] = self._as_of.strftime("%Y-%m-%d")
+        return data
+
+
 class Backtester:
     """回测引擎"""
 
     def __init__(self, llm: Optional[LLMClient] = None):
         self.llm = llm or create_llm_client()
-        self.store = PredictionStore()
 
     async def run(self, config: BacktestConfig) -> BacktestReport:
         """执行回测"""
@@ -197,24 +205,31 @@ class Backtester:
         """在指定历史日期执行一次分析"""
         start_t = time.monotonic()
 
-        # 获取技术面数据
+        # 获取截至回测日期可见的技术面数据，避免使用未来 K 线。
         pf = PriceFetcher()
-        price_data = await pf.fetch(config.target, "3mo")
+        price_data = await pf.fetch_as_of(config.target, bt_date, lookback_days=180)
 
         if price_data.trading_days < 20:
             raise ValueError(f"数据不足: {price_data.trading_days} 个交易日")
 
         # --- 执行 Agent 分析 ---
         orchestrator = Orchestrator()
+        active = []
 
-        tech = TechnicalAnalyst(self.llm)
-        orchestrator.register(tech)
-        active = ["技术面分析师"]
+        if AGENT_TECH in config.agents:
+            tech = HistoricalTechnicalAnalyst(self.llm, price_data, bt_date)
+            orchestrator.register(tech)
+            active.append(AGENT_TECH)
 
-        if "公司前景分析师" in config.agents:
-            fund = FundamentalAnalyst(self.llm)
-            orchestrator.register(fund)
-            active.append("基本面分析师")
+        unsupported = [name for name in config.agents if name != AGENT_TECH]
+        if unsupported:
+            logger.warning(
+                "以下 Agent 暂无历史快照回放能力，回测中跳过: %s",
+                ", ".join(unsupported),
+            )
+
+        if not active:
+            raise ValueError("没有可历史回放的 Agent。当前回测仅支持近期股价分析师")
 
         agent_results = await orchestrator.run_selected(
             config.target, config.timeframe, agent_names=active,
@@ -234,23 +249,16 @@ class Backtester:
         elapsed = time.monotonic() - start_t
 
         # --- 计算实际涨跌幅 ---
-        # 用最近收盘作为起点
+        # 起点是回测日当时可见的收盘价；终点是预测周期结束后附近交易日收盘价。
         price_start = price_data.price_current
 
-        # 计算预测周期后的价格
-        valid_date = bt_date + timedelta(days={"短期": 7, "中期": 30, "长期": 90}.get(
-            "短期" if "周" in config.timeframe else "中期" if "月" in config.timeframe else "长期",
-            7
-        ))
-        price_end = price_start  # fallback
-
-        try:
-            future_data = await pf.fetch(config.target, "3mo")
-            closes = future_data.recent_closes
-            if closes:
-                price_end = closes[-1]
-        except Exception:
-            pass
+        valid_date = bt_date + timedelta(days=self._horizon_days(config.timeframe))
+        price_end = await pf.fetch_close_near(
+            config.target,
+            valid_date,
+            prefer="on_or_after",
+            tolerance_days=10,
+        )
 
         actual_change = (price_end / price_start - 1) * 100 if price_start > 0 else 0
 
@@ -286,3 +294,14 @@ class Backtester:
             price_end=price_end,
             elapsed_seconds=elapsed,
         )
+
+    @staticmethod
+    def _horizon_days(timeframe: str) -> int:
+        """把预测周期映射为自然日 horizon。"""
+        if "周" in timeframe or "短期" in timeframe:
+            return 7
+        if "月" in timeframe or "中期" in timeframe:
+            return 30
+        if "季" in timeframe or "季度" in timeframe or "长期" in timeframe:
+            return 90
+        return 7

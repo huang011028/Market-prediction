@@ -360,6 +360,15 @@ class Aggregator:
     def _score_quality(self, result: AnalysisResult) -> dict:
         """评估单个 Agent 的分析质量"""
         reasoning = result.reasoning or ""
+        status = getattr(result, "status", "ok")
+        if status == "failed":
+            return {
+                "data_quality": "poor",
+                "source_type": "failed",
+                "reliability": "low",
+                "issues": [getattr(result, "error_message", None) or "Agent 执行失败"],
+                "na_count": 99,
+            }
 
         # 数据质量: 统计"N/A"、"缺失"、"不可用"
         na_count = reasoning.count("N/A") + reasoning.count("缺失") + reasoning.count("不可用")
@@ -370,6 +379,8 @@ class Aggregator:
 
         # 数据源类型
         source_type = "realtime"
+        if status == "degraded":
+            source_type = "degraded"
         if "知识库" in reasoning:
             source_type = "knowledge_base"
         elif "参考值" in reasoning:
@@ -384,6 +395,7 @@ class Aggregator:
             reliability = "high"
 
         issues = []
+        if status == "degraded": issues.append("Agent 降级")
         if na_count > 0:    issues.append(f"数据缺口({na_count}处)")
         if source_type == "knowledge_base": issues.append("知识库非实时")
         if result.confidence < 0.25: issues.append("置信度极低")
@@ -409,6 +421,8 @@ class Aggregator:
 
             if quality == "poor":       factor *= 0.3
             elif quality == "partial":  factor *= 0.6
+            if source == "failed": factor *= 0.0
+            if source == "degraded": factor *= 0.4
             if source == "knowledge_base": factor *= 0.5
 
             if factor < 0.95:

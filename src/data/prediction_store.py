@@ -39,6 +39,9 @@ class PredictionRecord:
     agents_failed: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
     llm_model: str = ""
+    summary: str = ""
+    report_json: str = ""
+    report_md: str = ""
 
     @property
     def is_verified(self) -> bool:
@@ -189,8 +192,8 @@ class PredictionStore:
         verified = 0
         for row in rows:
             try:
-                self._verify_one(dict(row))
-                verified += 1
+                if self._verify_one(dict(row)):
+                    verified += 1
             except Exception as e:
                 logger.warning(f"验证预测 {row['id']} 失败: {e}")
 
@@ -211,7 +214,7 @@ class PredictionStore:
 
         return {"verified": total}
 
-    def _verify_one(self, record: dict):
+    def _verify_one(self, record: dict) -> bool:
         """验证单条预测"""
         from src.data.price_fetcher import PriceFetcher
         import asyncio
@@ -223,13 +226,18 @@ class PredictionStore:
         # 获取预测时和有效期结束时的价格
         async def get_prices():
             fetcher = PriceFetcher()
-            # 预测时的价格
-            data_before = await fetcher.fetch(target, "1mo")
-            price_at_predict = self._get_price_near_date(data_before, predicted_at)
-
-            # 有效期结束时的价格
-            data_after = await fetcher.fetch(target, "1mo")
-            price_at_valid = self._get_price_near_date(data_after, valid_until)
+            price_at_predict = await fetcher.fetch_close_near(
+                target,
+                predicted_at,
+                prefer="on_or_before",
+                tolerance_days=10,
+            )
+            price_at_valid = await fetcher.fetch_close_near(
+                target,
+                valid_until,
+                prefer="on_or_after",
+                tolerance_days=10,
+            )
 
             return price_at_predict, price_at_valid
 
@@ -237,10 +245,10 @@ class PredictionStore:
             price_before, price_after = asyncio.run(get_prices())
         except Exception as e:
             logger.warning(f"价格获取失败: {e}")
-            return
+            return False
 
         if price_before is None or price_after is None or price_before == 0:
-            return
+            return False
 
         actual_change = (price_after / price_before - 1) * 100
 
@@ -279,10 +287,11 @@ class PredictionStore:
                      f"实际={actual_dir} {actual_change:+.1f}%, "
                      f"方向={'✓' if dir_correct else '✗'}, "
                      f"幅度={'✓' if mag_hit else '✗'}")
+        return True
 
     @staticmethod
     def _get_price_near_date(price_data, target_date: datetime) -> Optional[float]:
-        """从 PriceData 中找最接近 target_date 的收盘价"""
+        """兼容旧调用：PriceData 不包含日期索引，只能返回当前快照价。"""
         import pandas as pd
         closes = price_data.recent_closes
         if closes:
@@ -299,6 +308,10 @@ class PredictionStore:
         timeframe: Optional[str] = None,
     ) -> dict:
         """获取准确率统计"""
+        timeframe_filter = None
+        if timeframe:
+            timeframe_filter = timeframe if "(" in timeframe else f"{timeframe}%"
+
         with self._conn() as conn:
             if agent_name is None:
                 # 综合统计
@@ -309,8 +322,8 @@ class PredictionStore:
                               AVG(confidence) as avg_conf,
                               AVG(ABS(actual_change_pct - (min_pct+max_pct)/2.0)) as avg_err
                        FROM predictions WHERE verified_at IS NOT NULL
-                       AND (? IS NULL OR timeframe=?)""",
-                    (timeframe, timeframe),
+                       AND (? IS NULL OR timeframe LIKE ?)""",
+                    (timeframe_filter, timeframe_filter),
                 ).fetchone()
             else:
                 # 单独 Agent
@@ -323,8 +336,8 @@ class PredictionStore:
                        FROM agent_results ar
                        JOIN predictions p ON ar.prediction_id = p.id
                        WHERE p.verified_at IS NOT NULL AND ar.agent_name=?
-                       AND (? IS NULL OR p.timeframe=?)""",
-                    (agent_name, timeframe, timeframe),
+                       AND (? IS NULL OR p.timeframe LIKE ?)""",
+                    (agent_name, timeframe_filter, timeframe_filter),
                 ).fetchone()
 
             if row and row["total"] > 0:
@@ -420,6 +433,9 @@ class PredictionStore:
             agents_failed=json.loads(r.get("agents_failed", "[]")) if r.get("agents_failed") else [],
             elapsed_seconds=r.get("elapsed_seconds", 0) or 0,
             llm_model=r.get("llm_model", ""),
+            summary=r.get("summary", "") or "",
+            report_json=r.get("report_json", "") or "",
+            report_md=r.get("report_md", "") or "",
         )
 
     def _refresh_stats(self):

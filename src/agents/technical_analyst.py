@@ -10,7 +10,7 @@ import logging
 import json
 from src.core.base_agent import BaseAgent
 from src.core.llm_client import LLMClient
-from src.core.result import AnalysisResult
+from src.core.result import AnalysisResult, Direction, Magnitude
 from src.core.confidence_calibrator import ConfidenceCalibrator
 from src.data.price_fetcher import PriceFetcher
 from src.data.stock_profiles import get_stock_profile, build_profile_context
@@ -77,6 +77,26 @@ class TechnicalAnalyst(BaseAgent):
         parts.append(f"- 20日最低: {ps.get('period_20d_low', '?')}")
         parts.append(f"- 最近10日收盘: {data.get('recent_closes', [])}")
         parts.append("")
+
+        snapshot = data.get("technical_snapshot", {}) or {}
+        if snapshot:
+            evidence_payload = {
+                "data_quality": snapshot.get("data_quality", {}),
+                "trend_regime": snapshot.get("trend_regime", {}),
+                "momentum_signals": snapshot.get("momentum_signals", {}),
+                "volume_signals": snapshot.get("volume_signals", {}),
+                "volatility_signals": snapshot.get("volatility_signals", {}),
+                "support_resistance": snapshot.get("support_resistance", {}),
+                "risk_levels": snapshot.get("risk_levels", {}),
+                "intraday_signals": data.get("intraday_signals", {}),
+                "confidence_model": snapshot.get("confidence_model", {}),
+                "evidence": snapshot.get("evidence", {}),
+            }
+            parts.append("## 技术证据包（代码计算，不依赖 LLM）")
+            parts.append("```json")
+            parts.append(json.dumps(evidence_payload, ensure_ascii=False, indent=2))
+            parts.append("```")
+            parts.append("")
 
         # 技术指标表格
         ind = data.get("indicators", {})
@@ -151,6 +171,13 @@ class TechnicalAnalyst(BaseAgent):
         parts.append("## 你的分析任务")
         parts.append("请严格按 6 步框架分析，输出 JSON。")
         parts.append("Step1 趋势定级 → Step2 动能确认 → Step3 量价验证 → Step4 多周期确认 → Step5 关键价位 → Step6 综合")
+        parts.append("")
+        parts.append("硬性约束:")
+        parts.append("- 不得编造未提供的价格、成交量、指标或新闻。")
+        parts.append("- 若趋势、动量、量能互相冲突，必须降低置信度，必要时输出 neutral。")
+        parts.append("- reasoning 第一段必须说明主导技术证据。")
+        parts.append("- risks 必须至少包含一个技术判断失效条件。")
+        parts.append("- 如果代码计算的 confidence_model 存在 hard_caps，不得给出高于 hard_caps 约束的强判断。")
 
         # 🆕 Round2: 标的信息
         target = context.get("target", "")
@@ -220,8 +247,36 @@ class TechnicalAnalyst(BaseAgent):
 
     async def analyze(self, data: dict, context: dict) -> AnalysisResult:
         """分析 + 校准"""
+        dq = data.get("data_quality", {}) or {}
+        if dq.get("status") == "failed" or float(dq.get("score", 1.0) or 0) < 0.4:
+            reason = "技术面数据不足，不能形成有效技术判断。"
+            if dq.get("issues"):
+                reason += " 数据问题: " + "；".join(dq.get("issues", []))
+            return AnalysisResult(
+                agent_name=self.name,
+                target=context.get("target", ""),
+                timeframe=context.get("timeframe", ""),
+                direction=Direction.NEUTRAL,
+                magnitude=Magnitude(min_pct=-2.0, max_pct=2.0),
+                confidence=0.15,
+                reasoning=reason,
+                key_factors=["K线样本或字段不足"],
+                risks=["行情数据不足时技术面结论不可靠"],
+                data_summary=self._build_data_summary(data),
+                status="failed",
+                error_message=reason,
+                data_quality_score=float(dq.get("score", 0.0) or 0.0),
+            )
+
         # 先用默认 LLM 分析
         result = await super().analyze(data, context)
+        result.data_summary = self._build_data_summary(data)
+        result.data_quality_score = float(dq.get("score", 1.0) or 1.0)
+        if dq.get("status") == "degraded":
+            result.status = "degraded"
+            result.confidence = min(result.confidence, 0.35)
+            if dq.get("issues"):
+                result.risks.append("技术面数据质量降级: " + "；".join(dq.get("issues", [])))
 
         # 校准置信度
         try:
@@ -230,7 +285,7 @@ class TechnicalAnalyst(BaseAgent):
             contradiction = self._has_signal_contradiction(ind)
             # 判断数据质量
             data_quality = "normal"
-            if data.get("trading_days", 0) < 30:
+            if dq.get("status") == "degraded" or data.get("trading_days", 0) < 60:
                 data_quality = "partial"
 
             cal = self.calibrator.calibrate_confidence(
@@ -263,7 +318,39 @@ class TechnicalAnalyst(BaseAgent):
         except Exception as e:
             logger.debug(f"幅度校准失败: {e}")
 
+        self._apply_snapshot_constraints(result, data)
+
         return result
+
+    def _build_data_summary(self, data: dict) -> dict:
+        snapshot = data.get("technical_snapshot", {}) or {}
+        return {
+            "symbol": data.get("symbol"),
+            "name": data.get("name"),
+            "market": data.get("market"),
+            "data_period": data.get("data_period"),
+            "trading_days": data.get("trading_days", 0),
+            "latest_date": data.get("latest_date"),
+            "source": "PriceFetcher",
+            "freshness": (data.get("freshness") or {}).get("note") or data.get("latest_date") or "未提供",
+            "quality": data.get("data_quality", {}).get("status", "unknown"),
+            "data_quality": data.get("data_quality", {}),
+            "freshness_detail": data.get("freshness", {}),
+            "intraday_trend": data.get("intraday_trend", []),
+            "intraday_meta": data.get("intraday_meta", {}),
+            "intraday_signals": data.get("intraday_signals", {}),
+            "price_summary": data.get("price_summary", {}),
+            "recent_closes": data.get("recent_closes", []),
+            "recent_trend": data.get("recent_trend", []),
+            "indicators": data.get("indicators", {}),
+            "technical_snapshot": snapshot,
+            "trend_regime": snapshot.get("trend_regime", {}),
+            "volume_signals": snapshot.get("volume_signals", {}),
+            "support_resistance": snapshot.get("support_resistance", {}),
+            "risk_levels": snapshot.get("risk_levels", {}),
+            "confidence_model": snapshot.get("confidence_model", {}),
+            "evidence": snapshot.get("evidence", {}),
+        }
 
     def _has_signal_contradiction(self, ind: dict) -> bool:
         """检测信号是否有明显矛盾"""
@@ -283,3 +370,107 @@ class TechnicalAnalyst(BaseAgent):
         if ind.get("OBV_divergence") not in ("none", None):
             contradictions += 1
         return contradictions >= 2
+
+    def _apply_snapshot_constraints(self, result: AnalysisResult, data: dict) -> None:
+        """用代码证据包约束 LLM 输出，避免高置信度自由发挥。"""
+        snapshot = data.get("technical_snapshot", {}) or {}
+        if not snapshot:
+            return
+
+        confidence_model = snapshot.get("confidence_model", {}) or {}
+        evidence = snapshot.get("evidence", {}) or {}
+        support_resistance = snapshot.get("support_resistance", {}) or {}
+        risk_levels = snapshot.get("risk_levels", {}) or {}
+        volume = snapshot.get("volume_signals", {}) or {}
+        intraday_signals = data.get("intraday_signals", {}) or {}
+
+        caps = list(confidence_model.get("hard_caps", []) or [])
+        model_confidence = confidence_model.get("technical_confidence")
+        if model_confidence is not None:
+            try:
+                model_confidence = float(model_confidence)
+                if result.confidence > model_confidence:
+                    old_conf = result.confidence
+                    result.confidence = max(0.05, min(result.confidence, model_confidence))
+                    result.reasoning += (
+                        f"\n\n[技术证据约束: LLM 置信度{old_conf:.0%}→"
+                        f"证据模型上限{result.confidence:.0%}]"
+                    )
+            except (TypeError, ValueError):
+                pass
+
+        suggested = confidence_model.get("suggested_direction")
+        if suggested in {"bullish", "bearish"} and result.direction.value != suggested:
+            opposite = (
+                result.direction.value == "bullish" and suggested == "bearish"
+            ) or (
+                result.direction.value == "bearish" and suggested == "bullish"
+            )
+            if opposite:
+                result.confidence = min(result.confidence, 0.4)
+                caps.append(f"LLM 方向与技术证据包建议方向({suggested})相反，置信度不超过 0.40")
+
+        if intraday_signals.get("available"):
+            intraday_state = intraday_signals.get("state")
+            intraday_evidence = intraday_signals.get("evidence", {}) or {}
+            if result.direction == Direction.BULLISH and intraday_state == "selloff":
+                result.confidence = min(result.confidence, 0.45)
+                caps.append("分钟线处于盘中弱势，日线看涨结论需要降级，置信度不超过 0.45")
+            elif result.direction == Direction.BEARISH and intraday_state == "strong_up":
+                result.confidence = min(result.confidence, 0.45)
+                caps.append("分钟线处于盘中强势，日线看跌结论需要降级，置信度不超过 0.45")
+            elif intraday_state in {"mixed", "range_bound"} and result.confidence > 0.65:
+                result.confidence = min(result.confidence, 0.65)
+                caps.append("分钟线未形成明确单边方向，技术面高置信结论需要保守处理")
+
+            intraday_source = {
+                Direction.BULLISH: intraday_evidence.get("bullish", []),
+                Direction.BEARISH: intraday_evidence.get("bearish", []),
+                Direction.NEUTRAL: intraday_evidence.get("neutral", []),
+            }.get(result.direction, [])
+            for factor in intraday_source[:2]:
+                factor = f"盘中信号: {factor}"
+                if factor not in result.key_factors:
+                    result.key_factors.append(factor)
+
+        if result.direction == Direction.BULLISH:
+            resistance_distance = support_resistance.get("resistance_distance_pct")
+            if (
+                resistance_distance is not None
+                and 0 <= float(resistance_distance) <= 2
+                and not volume.get("price_up_volume_up")
+                and not volume.get("abnormal_volume")
+            ):
+                result.confidence = min(result.confidence, 0.45)
+                caps.append("接近上方压力且未放量突破，看涨置信度不超过 0.45")
+        elif result.direction == Direction.BEARISH:
+            support_distance = support_resistance.get("support_distance_pct")
+            if support_distance is not None and -2 <= float(support_distance) <= 0:
+                result.confidence = min(result.confidence, 0.55)
+                caps.append("接近下方支撑，看跌置信度需要保守")
+
+        factor_source = {
+            Direction.BULLISH: evidence.get("bullish", []),
+            Direction.BEARISH: evidence.get("bearish", []),
+            Direction.NEUTRAL: evidence.get("neutral", []),
+        }.get(result.direction, [])
+        for factor in factor_source[:3]:
+            if factor and factor not in result.key_factors:
+                result.key_factors.append(factor)
+
+        if risk_levels.get("stop_loss_reference") is not None:
+            risk = f"技术失效参考: 跌破 {risk_levels['stop_loss_reference']}"
+            if risk not in result.risks:
+                result.risks.append(risk)
+        if risk_levels.get("breakout_reference") is not None:
+            risk = f"突破确认参考: 放量站上 {risk_levels['breakout_reference']}"
+            if risk not in result.risks:
+                result.risks.append(risk)
+
+        if caps:
+            if getattr(result, "status", "ok") == "ok" and result.confidence < 0.5:
+                result.status = "degraded"
+                result.error_message = "技术证据存在硬约束，已降低置信度"
+            for cap in caps[:3]:
+                if cap not in result.risks:
+                    result.risks.append(cap)

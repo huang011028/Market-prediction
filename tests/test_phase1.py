@@ -130,6 +130,36 @@ class TestTechnicalIndicators:
         assert "rsi_zone" in patterns
         assert "boll_position" in patterns
 
+    def test_fetch_as_of_truncates_future_data(self, sample_df, monkeypatch):
+        """历史快照只能看到 as_of 当天及之前的数据。"""
+        import asyncio
+
+        fetcher = PriceFetcher()
+        monkeypatch.setattr(fetcher, "_fetch_ohlcv", lambda *args, **kwargs: sample_df)
+
+        as_of = sample_df.index[59]
+        data = asyncio.run(fetcher.fetch_as_of("000001", as_of, lookback_days=120))
+
+        assert data.price_current == pytest.approx(float(sample_df.loc[as_of, "close"]))
+        assert data.price_current != pytest.approx(float(sample_df["close"].iloc[-1]))
+        assert data.trading_days == 60
+        assert str(as_of.date()) in data.data_period
+
+    def test_fetch_close_near_prefers_expected_side(self, sample_df, monkeypatch):
+        """验证按日期取价时不会总是拿最新收盘价。"""
+        import asyncio
+
+        fetcher = PriceFetcher()
+        monkeypatch.setattr(fetcher, "_fetch_ohlcv", lambda *args, **kwargs: sample_df)
+
+        target = sample_df.index[10].to_pydatetime()
+        before = asyncio.run(fetcher.fetch_close_near("000001", target, prefer="on_or_before"))
+        after = asyncio.run(fetcher.fetch_close_near("000001", target, prefer="on_or_after"))
+
+        assert before == pytest.approx(float(sample_df.iloc[10]["close"]))
+        assert after == pytest.approx(float(sample_df.iloc[10]["close"]))
+        assert before != pytest.approx(float(sample_df.iloc[-1]["close"]))
+
 
 # ================================================================
 # Aggregator 测试

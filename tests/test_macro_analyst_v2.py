@@ -7,6 +7,8 @@ import pytest
 class TestMacroFetcherV2:
     """测试宏观数据获取器 v2"""
 
+    pytestmark = [pytest.mark.network, pytest.mark.slow]
+
     @pytest.mark.asyncio
     async def test_fetch_china_data(self):
         """测试中国市场数据获取"""

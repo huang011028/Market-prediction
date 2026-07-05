@@ -7,13 +7,23 @@
 支持市场：A股（akshare）、港股（akshare）、美股（yfinance）
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 import logging
 
 import pandas as pd
 import numpy as np
+
+from src.data.symbol_resolver import resolve_symbol, identify_market
+from src.data.technical_features import (
+    build_recent_trend,
+    build_intraday_signals,
+    assess_price_data_quality,
+    build_technical_snapshot,
+    describe_market_freshness,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +47,25 @@ class PriceData:
     indicators: dict       # 技术指标字典
     patterns: dict         # 形态描述
     recent_closes: list    # 最近10个交易日收盘价
+    name: str = ""
+    latest_date: str = ""
+    recent_trend: list[dict] = field(default_factory=list)
+    data_quality: dict = field(default_factory=dict)
+    technical_snapshot: dict = field(default_factory=dict)
+    intraday_trend: list[dict] = field(default_factory=list)
+    intraday_meta: dict = field(default_factory=dict)
+    intraday_signals: dict = field(default_factory=dict)
+    freshness: dict = field(default_factory=dict)
 
     def to_agent_dict(self) -> dict:
         """输出给 Agent 的字典格式"""
         return {
             "symbol": self.symbol,
+            "name": self.name,
             "market": self.market,
             "data_period": self.data_period,
             "trading_days": self.trading_days,
+            "latest_date": self.latest_date,
             "price_summary": {
                 "latest_close": round(self.price_current, 2),
                 "period_20d_high": round(self.price_20d_high, 2),
@@ -55,6 +76,13 @@ class PriceData:
             "indicators": {k: self._format_value(v) for k, v in self.indicators.items()},
             "patterns": self.patterns,
             "recent_closes": [round(c, 2) for c in self.recent_closes],
+            "recent_trend": self.recent_trend,
+            "data_quality": self.data_quality,
+            "technical_snapshot": self.technical_snapshot,
+            "intraday_trend": self.intraday_trend,
+            "intraday_meta": self.intraday_meta,
+            "intraday_signals": self.intraday_signals,
+            "freshness": self.freshness,
         }
 
     @staticmethod
@@ -87,19 +115,129 @@ class PriceFetcher:
         Returns:
             PriceData 对象
         """
-        # 清洗 symbol
-        symbol = symbol.strip().upper()
-        original_symbol = symbol
+        info = resolve_symbol(symbol)
+        original_symbol = info.symbol
 
         # 识别市场
-        market = self._identify_market(symbol)
+        market = info.market
 
         # 获取原始 K 线
-        logger.info(f"获取 {symbol} ({market}) 的 K 线数据，周期={period}")
-        df = self._fetch_ohlcv(symbol, market, period)
+        logger.info(f"获取 {info.display_name} ({market}) 的 K 线数据，周期={period}")
+        df = self._fetch_ohlcv(info.symbol, market, period)
 
         if df.empty:
-            raise ValueError(f"无法获取 {original_symbol} 的行情数据")
+            raise ValueError(f"无法获取 {info.display_name} 的行情数据")
+
+        return await self._build_price_data(
+            original_symbol,
+            market,
+            df,
+            include_weekly_context=True,
+            name=info.name,
+        )
+
+    async def fetch_as_of(
+        self,
+        symbol: str,
+        as_of: str | date | datetime,
+        lookback_days: int = 180,
+    ) -> PriceData:
+        """获取截至某个历史日期可见的股价数据。
+
+        这个接口供回测使用，会先拉取较长历史数据，再严格截断到
+        ``as_of`` 当天或之前，避免把未来 K 线喂给 Agent。
+        """
+        info = resolve_symbol(symbol)
+        original_symbol = info.symbol
+        market = info.market
+        as_of_ts = self._to_timestamp(as_of)
+        start_ts = as_of_ts - pd.Timedelta(days=lookback_days)
+
+        logger.info(
+            f"获取 {info.display_name} ({market}) 的历史 K 线数据，"
+            f"截至={as_of_ts.date()}，回看={lookback_days}天"
+        )
+
+        days_from_today = max((pd.Timestamp.now().normalize() - as_of_ts).days, 0)
+        fetch_days = days_from_today + lookback_days
+        df = self._fetch_ohlcv(info.symbol, market, self._period_for_lookback(fetch_days))
+        df = self._ensure_datetime_index(df)
+        df = df[(df.index >= start_ts) & (df.index <= as_of_ts)]
+
+        if df.empty:
+            raise ValueError(f"无法获取 {original_symbol} 在 {as_of_ts.date()} 前的行情数据")
+
+        return await self._build_price_data(
+            original_symbol,
+            market,
+            df,
+            as_of=as_of_ts,
+            include_weekly_context=False,
+            include_intraday_context=False,
+            name=info.name,
+        )
+
+    async def fetch_close_near(
+        self,
+        symbol: str,
+        target_date: str | date | datetime,
+        prefer: str = "on_or_after",
+        tolerance_days: int = 10,
+    ) -> float:
+        """获取目标日期附近的收盘价。
+
+        Args:
+            symbol: 股票代码
+            target_date: 目标日期
+            prefer: ``on_or_after`` / ``on_or_before`` / ``nearest``
+            tolerance_days: 允许偏离目标日期的最大自然日数
+        """
+        info = resolve_symbol(symbol)
+        symbol = info.symbol
+        market = info.market
+        target_ts = self._to_timestamp(target_date)
+
+        df = self._fetch_ohlcv(symbol, market, "2y")
+        df = self._ensure_datetime_index(df)
+
+        if df.empty:
+            raise ValueError(f"无法获取 {symbol} 的行情数据")
+
+        if prefer == "on_or_before":
+            candidates = df[df.index <= target_ts]
+            if candidates.empty:
+                raise ValueError(f"{symbol} 在 {target_ts.date()} 前没有可用收盘价")
+            chosen_date = candidates.index[-1]
+        elif prefer == "nearest":
+            distances = (df.index - target_ts).to_series().abs()
+            chosen_date = distances.idxmin()
+        else:
+            candidates = df[df.index >= target_ts]
+            if candidates.empty:
+                raise ValueError(f"{symbol} 在 {target_ts.date()} 后没有可用收盘价")
+            chosen_date = candidates.index[0]
+
+        distance_days = abs((chosen_date - target_ts).days)
+        if distance_days > tolerance_days:
+            raise ValueError(
+                f"{symbol} 离 {target_ts.date()} 最近的交易日为 {chosen_date.date()}，"
+                f"超过容忍范围 {tolerance_days} 天"
+            )
+
+        return float(df.loc[chosen_date, "close"])
+
+    async def _build_price_data(
+        self,
+        original_symbol: str,
+        market: str,
+        df: pd.DataFrame,
+        as_of: Optional[pd.Timestamp] = None,
+        include_weekly_context: bool = True,
+        include_intraday_context: bool = True,
+        name: str = "",
+    ) -> PriceData:
+        """从标准化 OHLCV DataFrame 构造 PriceData。"""
+        df = self._ensure_datetime_index(df)
 
         # 计算技术指标（含新增）
         indicators = self._compute_indicators(df)
@@ -116,12 +254,49 @@ class PriceFetcher:
         patterns["candlestick"] = candlestick_patterns
 
         # 🆕 Round1: 获取周线背景
-        weekly_context = await self._fetch_weekly_context(symbol, market)
+        weekly_context = None
+        if include_weekly_context:
+            weekly_context = await self._fetch_weekly_context(original_symbol, market)
         if weekly_context:
             patterns["weekly_context"] = weekly_context
 
         # 最近 10 个交易日收盘价
         recent_closes = df["close"].tail(10).tolist()
+        recent_trend = build_recent_trend(df, points=30)
+        data_quality = assess_price_data_quality(df)
+        latest_date = ""
+        if isinstance(df.index, pd.DatetimeIndex) and len(df.index) > 0:
+            latest_date = df.index.max().date().isoformat()
+
+        intraday_trend: list[dict] = []
+        intraday_meta: dict = {
+            "available": False,
+            "source": "none",
+            "interval": "5m",
+            "reason": "未请求分钟级行情",
+        }
+        if include_intraday_context:
+            intraday_trend, intraday_meta = self._fetch_intraday_context(original_symbol, market)
+        intraday_signals = build_intraday_signals(intraday_trend)
+
+        freshness = describe_market_freshness(
+            latest_date,
+            market=market,
+            intraday_latest_time=intraday_meta.get("latest_time") if intraday_meta.get("available") else None,
+        )
+        if intraday_meta:
+            intraday_meta["freshness_note"] = freshness["note"]
+            intraday_meta["freshness_status"] = freshness["status"]
+
+        technical_snapshot = build_technical_snapshot(
+            df,
+            indicators=indicators,
+            data_quality=data_quality,
+            recent_trend=recent_trend,
+            symbol=original_symbol,
+            name=name,
+            market=market,
+        )
 
         # 组装结果
         close = df["close"]
@@ -136,10 +311,17 @@ class PriceFetcher:
         if len(close) >= 21:
             chg_20d = (close.iloc[-1] / close.iloc[-21] - 1) * 100
 
+        if as_of is not None:
+            data_period = f"截至{as_of.date()}近{len(df)}个交易日"
+        elif isinstance(df.index, pd.DatetimeIndex) and len(df.index) > 0:
+            data_period = f"{df.index[0].date()}~{df.index[-1].date()} ({len(df)}个交易日)"
+        else:
+            data_period = f"近{len(df)}个交易日"
+
         return PriceData(
             symbol=original_symbol,
             market=market,
-            data_period=f"近{len(df)}个交易日",
+            data_period=data_period,
             trading_days=len(df),
             price_current=float(close.iloc[-1]),
             price_20d_high=float(high_20.max()),
@@ -149,7 +331,54 @@ class PriceFetcher:
             indicators=indicators,
             patterns=patterns,
             recent_closes=recent_closes,
+            name=name,
+            latest_date=latest_date,
+            recent_trend=recent_trend,
+            data_quality=data_quality,
+            technical_snapshot=technical_snapshot,
+            intraday_trend=intraday_trend,
+            intraday_meta=intraday_meta,
+            intraday_signals=intraday_signals,
+            freshness=freshness,
         )
+
+    @staticmethod
+    def _to_timestamp(value: str | date | datetime) -> pd.Timestamp:
+        """将常见日期输入标准化为无时区 Timestamp。"""
+        ts = pd.to_datetime(value)
+        if getattr(ts, "tzinfo", None) is not None:
+            ts = ts.tz_convert(None) if hasattr(ts, "tz_convert") else ts.tz_localize(None)
+        return pd.Timestamp(ts).normalize()
+
+    @staticmethod
+    def _period_for_lookback(lookback_days: int) -> str:
+        if lookback_days <= 45:
+            return "1mo"
+        if lookback_days <= 120:
+            return "3mo"
+        if lookback_days <= 220:
+            return "6mo"
+        if lookback_days <= 500:
+            return "1y"
+        return "2y"
+
+    @staticmethod
+    def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+        """确保 K 线 DataFrame 使用无时区 DatetimeIndex。"""
+        if "date" in df.columns:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date")
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df = df.copy()
+            df.index = pd.to_datetime(df.index)
+
+        if df.index.tz is not None:
+            df = df.copy()
+            df.index = df.index.tz_localize(None)
+
+        return df.sort_index()
 
     # ================================================================
     # 市场识别
@@ -157,18 +386,7 @@ class PriceFetcher:
 
     def _identify_market(self, symbol: str) -> str:
         """识别股票所属市场"""
-        symbol = symbol.replace(".HK", "").replace(".SZ", "").replace(".SS", "")
-
-        if symbol.isdigit():
-            if len(symbol) <= 5:
-                # 4-5位数字，港股（如 0700, 9988）
-                return "HK"
-            else:
-                # 6位数字，A股
-                return "A"
-        else:
-            # 含字母，美股或其他
-            return "US"
+        return identify_market(symbol)
 
     # ================================================================
     # 数据获取
@@ -233,6 +451,16 @@ class PriceFetcher:
                 return self._normalize_dataframe(df)
         except Exception as e:
             logger.debug(f"stock_zh_a_hist 失败: {e}")
+
+        # === 方案 3: 腾讯行情 API（兜底，免 API Key） ===
+        df = self._fetch_from_tencent(symbol, market="a")
+        if df is not None and not df.empty:
+            start_dt = pd.to_datetime(start_date)
+            if isinstance(df.index, pd.DatetimeIndex):
+                df = df[df.index >= start_dt]
+            if not df.empty:
+                logger.info(f"腾讯API 获取A股 {len(df)} 条K线")
+                return df
 
         raise ValueError(
             f"无法获取 {symbol} 的 A 股行情数据，"
@@ -337,6 +565,8 @@ class PriceFetcher:
                 qt_code = f"hk{code}"
             elif market == "us":
                 qt_code = code.lower()
+            elif market == "a":
+                qt_code = self._a_share_prefix(code)
             else:
                 qt_code = code
 
@@ -382,6 +612,292 @@ class PriceFetcher:
         except Exception as e:
             logger.debug(f"腾讯K线API失败({market} {code}): {e}")
             return None
+
+    # ================================================================
+    # 分钟级行情（前端展示用，不作为日线技术指标主输入）
+    # ================================================================
+
+    def _fetch_intraday_context(
+        self,
+        symbol: str,
+        market: str,
+        interval: str = "5m",
+        points: int = 96,
+    ) -> tuple[list[dict], dict]:
+        """获取分钟级走势；失败时返回空走势和可展示原因。"""
+        source = "none"
+        df: Optional[pd.DataFrame] = None
+        try:
+            if market == "A":
+                df, source = self._fetch_a_share_intraday(symbol, interval=interval, points=points)
+            elif market == "HK":
+                df, source = self._fetch_yfinance_intraday(symbol.zfill(4) + ".HK", interval=interval)
+            else:
+                df, source = self._fetch_yfinance_intraday(symbol, interval=interval)
+        except Exception as e:
+            logger.debug(f"分钟级行情获取失败({market} {symbol}): {e}")
+
+        if df is None or df.empty:
+            return [], {
+                "available": False,
+                "source": source,
+                "interval": interval,
+                "points": 0,
+                "reason": "分钟级行情暂不可用，已回退到日线走势",
+            }
+
+        trend = self._build_intraday_trend(df.tail(points))
+        if not trend:
+            return [], {
+                "available": False,
+                "source": source,
+                "interval": interval,
+                "points": 0,
+                "reason": "分钟级行情格式不可用，已回退到日线走势",
+            }
+
+        latest = trend[-1]
+        return trend, {
+            "available": True,
+            "source": source,
+            "interval": interval,
+            "points": len(trend),
+            "latest_time": latest.get("time"),
+            "latest_price": latest.get("close"),
+        }
+
+    def _fetch_a_share_intraday(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        points: int = 96,
+    ) -> tuple[Optional[pd.DataFrame], str]:
+        minutes = self._interval_minutes(interval)
+
+        try:
+            import akshare as ak
+
+            df = ak.stock_zh_a_hist_min_em(
+                symbol=symbol,
+                period=str(minutes),
+                adjust="",
+            )
+            df = self._normalize_intraday_dataframe(df)
+            if df is not None and not df.empty:
+                return df.tail(points), "akshare_minute"
+        except Exception as e:
+            logger.debug(f"akshare 分钟行情失败({symbol}): {e}")
+
+        df = self._fetch_intraday_from_tencent(symbol, market="a", interval=interval, points=points)
+        if df is not None and not df.empty:
+            return df, "tencent_minute"
+
+        return None, "none"
+
+    def _fetch_intraday_from_tencent(
+        self,
+        code: str,
+        market: str = "a",
+        interval: str = "5m",
+        points: int = 96,
+    ) -> Optional[pd.DataFrame]:
+        """从腾讯分钟 K 线接口获取走势，作为免费兜底源。"""
+        try:
+            import requests
+
+            minutes = self._interval_minutes(interval)
+            minute_key = f"m{minutes}"
+            if market == "hk":
+                qt_code = f"hk{code.zfill(5)}"
+            elif market == "us":
+                qt_code = code.lower()
+            else:
+                qt_code = self._a_share_prefix(code)
+
+            url = (
+                "https://ifzq.gtimg.cn/appstock/app/kline/mkline"
+                f"?param={qt_code},{minute_key},,{points}"
+            )
+            resp = requests.get(url, timeout=6, verify=False)
+            data = resp.json()
+            if data.get("code") != 0:
+                return self._fetch_realtime_minute_from_tencent(qt_code, points=points)
+
+            stock_data = data.get("data", {}).get(qt_code, {})
+            klines = stock_data.get(minute_key) or stock_data.get("mline") or []
+            rows = self._parse_intraday_rows(klines)
+            if not rows:
+                return self._fetch_realtime_minute_from_tencent(qt_code, points=points)
+            return pd.DataFrame(rows).set_index("datetime").sort_index()
+        except Exception as e:
+            logger.debug(f"腾讯分钟K线API失败({market} {code}): {e}")
+            try:
+                qt_code = self._a_share_prefix(code) if market == "a" else code
+                return self._fetch_realtime_minute_from_tencent(qt_code, points=points)
+            except Exception:
+                return None
+
+    def _fetch_realtime_minute_from_tencent(self, qt_code: str, points: int = 96) -> Optional[pd.DataFrame]:
+        """腾讯分时接口兜底。返回当日每分钟累计价格点。"""
+        try:
+            import requests
+
+            url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={qt_code}"
+            resp = requests.get(url, timeout=6, verify=False)
+            data = resp.json()
+            if data.get("code") != 0:
+                return None
+
+            stock = data.get("data", {}).get(qt_code, {})
+            minute_data = stock.get("data", {}).get("data", [])
+            qt = stock.get("qt", {}).get(qt_code, [])
+            trade_date = ""
+            if len(qt) > 30 and str(qt[30]).isdigit():
+                trade_date = str(qt[30])[:8]
+            if not trade_date:
+                trade_date = pd.Timestamp.now().strftime("%Y%m%d")
+
+            rows = []
+            for item in minute_data[-points:]:
+                parts = str(item).split()
+                if len(parts) < 2:
+                    continue
+                try:
+                    hhmm = parts[0].zfill(4)
+                    dt = pd.to_datetime(f"{trade_date}{hhmm}", format="%Y%m%d%H%M")
+                    price = float(parts[1])
+                    rows.append({
+                        "datetime": dt,
+                        "open": price,
+                        "close": price,
+                        "high": price,
+                        "low": price,
+                        "volume": float(parts[2]) if len(parts) > 2 else 0.0,
+                    })
+                except Exception:
+                    continue
+
+            if not rows:
+                return None
+            return pd.DataFrame(rows).set_index("datetime").sort_index()
+        except Exception as e:
+            logger.debug(f"腾讯分时API失败({qt_code}): {e}")
+            return None
+
+    def _fetch_yfinance_intraday(self, symbol: str, interval: str = "5m") -> tuple[Optional[pd.DataFrame], str]:
+        try:
+            import yfinance as yf
+
+            df = yf.Ticker(symbol).history(period="5d", interval=interval)
+            df = self._normalize_intraday_dataframe(df)
+            if df is not None and not df.empty:
+                return df, "yfinance_intraday"
+        except Exception as e:
+            logger.debug(f"yfinance 分钟行情失败({symbol}): {e}")
+        return None, "none"
+
+    @staticmethod
+    def _interval_minutes(interval: str) -> int:
+        text = str(interval).lower().replace("min", "m").strip()
+        if text.endswith("m"):
+            text = text[:-1]
+        try:
+            value = int(text)
+        except ValueError:
+            value = 5
+        return value if value in {1, 5, 15, 30, 60} else 5
+
+    def _normalize_intraday_dataframe(self, df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        if df is None or df.empty:
+            return None
+
+        df = df.copy()
+        col_mapping = {
+            "时间": "datetime",
+            "日期": "datetime",
+            "Datetime": "datetime",
+            "Date": "datetime",
+            "开盘": "open",
+            "Open": "open",
+            "收盘": "close",
+            "Close": "close",
+            "最高": "high",
+            "High": "high",
+            "最低": "low",
+            "Low": "low",
+            "成交量": "volume",
+            "Volume": "volume",
+        }
+        df = df.rename(columns=col_mapping)
+
+        if "datetime" in df.columns:
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df = df.set_index("datetime")
+        elif not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
+        required = ["close"]
+        if any(col not in df.columns for col in required):
+            return None
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col not in df.columns:
+                df[col] = df["close"] if col != "volume" else 0
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        return df.dropna(subset=["close"]).sort_index()
+
+    @staticmethod
+    def _parse_intraday_rows(klines: list) -> list[dict]:
+        rows = []
+        for item in klines:
+            parts = item if isinstance(item, list) else str(item).split()
+            if len(parts) < 5:
+                continue
+            if len(parts) >= 7 and ":" in str(parts[1]):
+                dt_value = f"{parts[0]} {parts[1]}"
+                offset = 2
+            else:
+                dt_value = parts[0]
+                offset = 1
+            try:
+                dt_text = str(dt_value)
+                if dt_text.isdigit() and len(dt_text) >= 12:
+                    dt = pd.to_datetime(dt_text[:12], format="%Y%m%d%H%M")
+                else:
+                    dt = pd.to_datetime(dt_text)
+                rows.append({
+                    "datetime": dt,
+                    "open": float(parts[offset]),
+                    "close": float(parts[offset + 1]),
+                    "high": float(parts[offset + 2]),
+                    "low": float(parts[offset + 3]),
+                    "volume": float(parts[offset + 4]) if len(parts) > offset + 4 else 0.0,
+                })
+            except Exception:
+                continue
+        return rows
+
+    @staticmethod
+    def _build_intraday_trend(df: pd.DataFrame) -> list[dict]:
+        if df is None or df.empty or "close" not in df.columns:
+            return []
+        first_close = float(df["close"].iloc[0]) if len(df) else 0.0
+        trend = []
+        for idx, row in df.iterrows():
+            close = float(row["close"])
+            change_pct = ((close / first_close - 1) * 100) if first_close else 0.0
+            dt = pd.Timestamp(idx)
+            trend.append({
+                "time": dt.strftime("%Y-%m-%d %H:%M"),
+                "date": dt.date().isoformat(),
+                "close": round(close, 2),
+                "volume": float(row.get("volume", 0) or 0),
+                "change_pct": round(change_pct, 2),
+            })
+        return trend
 
     def _fetch_yfinance(self, symbol: str, period: str) -> pd.DataFrame:
         """通过 yfinance 获取数据（带重试+退避）"""
@@ -772,6 +1288,8 @@ class PriceFetcher:
         """识别最近K线的经典形态"""
         patterns = []
         if len(df) < 3:
+            return patterns
+        if "open" not in df.columns:
             return patterns
 
         o, c, h, l = df["open"], df["close"], df["high"], df["low"]

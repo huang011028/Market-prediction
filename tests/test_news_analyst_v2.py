@@ -7,8 +7,12 @@
 - Agent 一致性校验
 - 置信度校准器
 """
+import asyncio
 import pytest
+import json
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 
 # ================================================================
@@ -82,6 +86,15 @@ class TestNewsPreprocessing:
         titles = [item["title"] for item in result]
         # 应该保留了东方财富的版本而不是新浪的重复
         assert len(result) <= len(sample_news)
+
+    def test_amd_has_company_keywords(self):
+        """AMD 不能退化为仅 ticker 匹配。"""
+        from src.data.news_preprocessor import get_stock_keywords
+
+        keywords = get_stock_keywords("AMD", "US")
+
+        assert "Advanced Micro Devices" in keywords
+        assert "超威半导体" in keywords
 
     def test_sentiment_positive(self):
         """测试正面情感识别"""
@@ -303,6 +316,158 @@ class TestConsistencyValidation:
 
 
 # ================================================================
+# Agent 结构化证据与护栏测试
+# ================================================================
+
+class TestNewsAnalystGuardrails:
+    """测试新闻分析师结构化证据包和约束回写。"""
+
+    @pytest.fixture
+    def news_analyst(self):
+        from src.agents.news_analyst import NewsAnalyst
+
+        instance = NewsAnalyst.__new__(NewsAnalyst)
+        instance.name = "最新新闻分析师"
+        return instance
+
+    def _base_data(self, *, news_count=8, wp=4.0, wn=0.5, source_count=2):
+        sources = ["eastmoney", "sina"][:source_count]
+        return {
+            "symbol": "0700",
+            "company_name": "腾讯控股",
+            "_market": "HK",
+            "news_count": news_count,
+            "date_range": "2026-06-29 ~ 2026-07-06",
+            "news_source": "+".join(sources) if sources else "unavailable",
+            "sources_used": sources,
+            "_data_quality": {
+                "score": 0.9 if news_count > 5 else 0.3,
+                "news_count": news_count,
+                "sources": sources,
+                "is_available": bool(sources),
+            },
+            "preprocessing": {
+                "sentiment_stats": {
+                    "positive": 5 if wp > wn else 1,
+                    "negative": 1 if wp > wn else 5,
+                    "neutral": 1,
+                    "unknown": 0,
+                    "weighted_positive_score": wp,
+                    "weighted_negative_score": wn,
+                },
+                "category_breakdown": {"earnings": max(1, news_count // 2)},
+                "anomaly_flags": {},
+                "top_news": [
+                    {
+                        "title": "腾讯Q2业绩超预期",
+                        "source": "东方财富",
+                        "time": "2026-07-06",
+                        "_sentiment": "positive" if wp >= wn else "negative",
+                        "_category": "earnings",
+                        "_time_weight": 1.0,
+                    },
+                    {
+                        "title": "多家机构调整观点",
+                        "source": "新浪财经",
+                        "time": "2026-07-05",
+                        "_sentiment": "positive" if wp >= wn else "negative",
+                        "_category": "rating",
+                        "_time_weight": 0.8,
+                    },
+                ],
+            },
+        }
+
+    def test_build_evidence_packet_positive_catalyst(self, news_analyst):
+        """强正面新闻应生成看涨矩阵和新闻事件冲击矩阵。"""
+        evidence = news_analyst._build_evidence_packet(self._base_data())
+
+        assert evidence["decision_matrix"]["suggested_direction"] == "bullish"
+        assert evidence["event_impact_matrix"]["positive_event_weight"] > 0
+        assert evidence["evidence"]["bullish"]
+        assert evidence["confidence_constraints"]["max_confidence"] > 0.5
+
+    def test_apply_consistency_issues_degrades_result(self, news_analyst):
+        """一致性问题应写回 risks/reasoning/status，并降低置信度。"""
+        from src.core.result import AnalysisResult, Direction, Magnitude
+
+        result = AnalysisResult(
+            agent_name="最新新闻分析师",
+            target="0700",
+            timeframe="短期(1周)",
+            direction=Direction.BULLISH,
+            magnitude=Magnitude(2.0, 6.0),
+            confidence=0.72,
+            reasoning="测试",
+            risks=[],
+        )
+
+        updated = news_analyst._apply_consistency_issues(
+            result, ["情绪分化时建议方向设为 neutral 或 confidence ≤ 0.55"]
+        )
+
+        assert updated.status == "degraded"
+        assert updated.confidence < 0.72
+        assert any("新闻一致性校验" in risk for risk in updated.risks)
+        assert "新闻一致性校验提示" in updated.reasoning
+
+    def test_apply_evidence_constraints_caps_sparse_confidence(self, news_analyst):
+        """新闻稀少时即使 LLM 看涨，也应触发硬上限和降级。"""
+        from src.core.result import AnalysisResult, Direction, Magnitude
+
+        data = self._base_data(news_count=2, wp=1.8, wn=0.0, source_count=1)
+        result = AnalysisResult(
+            agent_name="最新新闻分析师",
+            target="0700",
+            timeframe="短期(1周)",
+            direction=Direction.BULLISH,
+            magnitude=Magnitude(1.0, 5.0),
+            confidence=0.68,
+            reasoning="测试",
+            risks=[],
+        )
+
+        issues = news_analyst._apply_evidence_constraints(
+            result, data, {"timeframe": "短期(1周)"}
+        )
+
+        assert issues
+        assert result.status == "degraded"
+        assert result.confidence <= 0.35
+        assert any("新闻证据约束" in risk for risk in result.risks)
+
+    def test_build_data_summary_contains_structured_evidence(self, news_analyst):
+        """新闻摘要应带结构化证据，供 API 和 Aggregator 消费。"""
+        data = self._base_data()
+
+        summary = news_analyst._build_data_summary(
+            data,
+            {"timeframe": "短期(1周)"},
+            {"signals": [{"type": "earnings"}], "noise_discarded": []},
+            ["测试校验问题"],
+        )
+
+        assert summary["source"] == "eastmoney+sina"
+        assert summary["quality"] == 0.9
+        assert summary["evidence"]["decision_matrix"]["suggested_direction"] == "bullish"
+        assert summary["consistency_issues"] == ["测试校验问题"]
+
+    def test_fixture_scenarios_match_news_matrix(self, news_analyst):
+        """固定离线样本应稳定映射到预期新闻矩阵。"""
+        fixture = Path(__file__).parent / "fixtures" / "news_scenarios.json"
+        scenarios = json.loads(fixture.read_text(encoding="utf-8"))
+
+        for scenario in scenarios:
+            signals = news_analyst._derive_news_signals(
+                scenario["data"],
+                scenario["timeframe"],
+            )
+            matrix = signals["decision_matrix"]
+            assert matrix["suggested_direction"] == scenario["expected_direction"], scenario["name"]
+            assert matrix["event_bucket"] == scenario["expected_event_bucket"], scenario["name"]
+
+
+# ================================================================
 # 置信度校准器测试
 # ================================================================
 
@@ -351,6 +516,54 @@ class TestConfidenceCalibrator:
 
 class TestMultiSourceFetch:
     """多源采集集成测试"""
+
+    @pytest.mark.asyncio
+    async def test_eastmoney_blocking_fetch_runs_off_event_loop(self, monkeypatch):
+        """东方财富内部同步抓取不能阻塞事件循环。"""
+        from src.data.news_sources import eastmoney
+
+        expected = [{"title": "贵州茅台新闻", "source": "东方财富"}]
+
+        def slow_fetch(symbol, max_items):
+            time.sleep(0.15)
+            return expected
+
+        monkeypatch.setattr(eastmoney, "_fetch_a_share", slow_fetch)
+
+        start = time.monotonic()
+        task = asyncio.create_task(
+            eastmoney.fetch_from_eastmoney("600519", market="A", max_items=1)
+        )
+        await asyncio.sleep(0.02)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.10
+        assert not task.done()
+        assert await task == expected
+
+    @pytest.mark.asyncio
+    async def test_sina_blocking_fetch_runs_off_event_loop(self, monkeypatch):
+        """新浪内部同步抓取不能阻塞事件循环。"""
+        from src.data.news_sources import sina
+
+        expected = [{"title": "贵州茅台公告", "source": "新浪财经"}]
+
+        def slow_fetch(symbol, max_items):
+            time.sleep(0.15)
+            return expected
+
+        monkeypatch.setattr(sina, "_fetch_a_share_news", slow_fetch)
+
+        start = time.monotonic()
+        task = asyncio.create_task(
+            sina.fetch_from_sina("600519", market="A", max_items=1)
+        )
+        await asyncio.sleep(0.02)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.10
+        assert not task.done()
+        assert await task == expected
 
     @pytest.mark.slow
     @pytest.mark.asyncio
@@ -427,6 +640,204 @@ class TestMultiSourceFetch:
             assert len(result.sources_used) >= 0
         except ImportError:
             pytest.skip("依赖未安装")
+
+
+class TestNewsFetcherFallbacks:
+    """测试新闻采集降级路径"""
+
+    def test_a_share_company_name_from_keywords(self):
+        from src.data.news_fetcher import NewsFetcher
+
+        fetcher = NewsFetcher(max_items=5)
+
+        assert fetcher._resolve_company_name("000333", "A") == "美的集团"
+
+    def test_relevance_filter_fallback_marks_raw_items(self):
+        from src.data.news_fetcher import NewsFetcher
+
+        fetcher = NewsFetcher(max_items=1)
+        items = [{
+            "title": "公司发布新产品",
+            "summary": "新闻摘要",
+            "source": "测试源",
+            "time": "2026-07-07 10:00:00",
+        }]
+
+        fallback = fetcher._fallback_processed_items(items)
+
+        assert len(fallback) == 1
+        assert fallback[0]["_relevance_fallback"] is True
+        assert fallback[0]["_sentiment"] == "unknown"
+
+    def test_regional_google_news_rss_parses_items(self, monkeypatch):
+        from urllib.parse import unquote_plus
+
+        from src.data.news_fetcher import NewsFetcher
+
+        captured = {}
+
+        class FakeResponse:
+            content = """<?xml version="1.0" encoding="UTF-8"?>
+            <rss><channel><item>
+              <title>美的集团发布经营进展</title>
+              <description><![CDATA[<a href="https://example.com">摘要</a>]]></description>
+              <source>测试新闻</source>
+              <pubDate>Tue, 07 Jul 2026 10:00:00 GMT</pubDate>
+              <link>https://example.com/news</link>
+            </item></channel></rss>""".encode("utf-8")
+
+            def raise_for_status(self):
+                return None
+
+        def fake_get(url, timeout):
+            captured["url"] = url
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        monkeypatch.setattr("requests.get", fake_get)
+        fetcher = NewsFetcher(max_items=5, source_timeout_seconds=6)
+
+        items = fetcher._fetch_from_regional_google_news("000333", "A", "美的集团", 7)
+
+        assert len(items) == 1
+        assert items[0]["title"] == "美的集团发布经营进展"
+        assert items[0]["summary"] == "摘要"
+        assert "ceid=CN:zh-Hans" in captured["url"]
+        assert '"美的集团" 000333 股票 when:7d' in unquote_plus(captured["url"])
+        assert captured["timeout"] == 6
+
+
+class TestNewsAnalystRuntimeMode:
+    """测试新闻分析师推理模式选择"""
+
+    def test_news_analyst_uses_extended_data_timeout(self):
+        from src.agents.news_analyst import NewsAnalyst
+
+        class DummyLLM:
+            pass
+
+        analyst = NewsAnalyst(DummyLLM(), archive_snapshots=False)
+
+        assert analyst.data_timeout_seconds >= 120
+
+    @pytest.mark.asyncio
+    async def test_many_news_uses_single_pass_to_avoid_timeout(self, monkeypatch):
+        from src.agents.news_analyst import NewsAnalyst
+        from src.core.result import AnalysisResult, Direction
+
+        class DummyLLM:
+            pass
+
+        analyst = NewsAnalyst(DummyLLM(), archive_snapshots=False)
+        calls = {"single": 0, "two_step": 0}
+
+        async def single_pass(data, context):
+            calls["single"] += 1
+            return AnalysisResult(
+                agent_name=analyst.name,
+                target=context["target"],
+                timeframe=context["timeframe"],
+                direction=Direction.NEUTRAL,
+                confidence=0.3,
+                reasoning="single pass",
+            )
+
+        async def two_step(data, context):
+            calls["two_step"] += 1
+            raise AssertionError("news_count 高时不应进入两步推理")
+
+        monkeypatch.setattr(analyst, "_analyze_single_pass", single_pass)
+        monkeypatch.setattr(analyst, "_analyze_two_step", two_step)
+        monkeypatch.setattr(
+            analyst,
+            "_finalize_result",
+            lambda result, data, context, step_signals: result,
+        )
+
+        result = await analyst.analyze(
+            {"_data_quality": {"is_available": True, "news_count": 20}, "news_count": 20},
+            {"target": "000333.SZ", "timeframe": "短期(1周)"},
+        )
+
+        assert result.reasoning == "single pass"
+        assert calls == {"single": 1, "two_step": 0}
+
+    @pytest.mark.asyncio
+    async def test_unavailable_news_returns_degraded_without_llm(self, monkeypatch):
+        from src.agents.news_analyst import NewsAnalyst
+        from src.core.prediction_target import default_target_spec
+
+        class DummyLLM:
+            pass
+
+        analyst = NewsAnalyst(DummyLLM(), archive_snapshots=False)
+        calls = {"single": 0, "two_step": 0}
+
+        async def single_pass(data, context):
+            calls["single"] += 1
+            raise AssertionError("实时新闻不可用时不应调用 LLM 单 pass")
+
+        async def two_step(data, context):
+            calls["two_step"] += 1
+            raise AssertionError("实时新闻不可用时不应调用两步推理")
+
+        monkeypatch.setattr(analyst, "_analyze_single_pass", single_pass)
+        monkeypatch.setattr(analyst, "_analyze_two_step", two_step)
+        context = {
+            "target": "000001.SZ",
+            "timeframe": "短期(1周)",
+            "prediction_target": default_target_spec(
+                "短期(1周)",
+                target="000001.SZ",
+            ).to_dict(),
+        }
+
+        result = await analyst.analyze(
+            {
+                "symbol": "000001",
+                "company_name": "平安银行",
+                "_market": "A",
+                "news_count": 0,
+                "date_range": "2026-07-01 ~ 2026-07-08",
+                "news_source": "unavailable",
+                "sources_used": [],
+                "news_items": [],
+                "_data_quality": {
+                    "score": 0.1,
+                    "news_count": 0,
+                    "sources": [],
+                    "is_available": False,
+                },
+            },
+            context,
+        )
+
+        assert result.status == "degraded"
+        assert result.confidence <= 0.1
+        assert result.direction.value == "neutral"
+        assert "不提供方向性贡献" in result.reasoning
+        assert result.data_summary["news_count"] == 0
+        assert calls == {"single": 0, "two_step": 0}
+
+    @pytest.mark.asyncio
+    async def test_gather_data_exception_degrades_to_unavailable(self):
+        from src.agents.news_analyst import NewsAnalyst
+
+        class DummyLLM:
+            pass
+
+        class BrokenFetcher:
+            async def fetch(self, symbol, market, days):
+                raise RuntimeError("source exploded")
+
+        analyst = NewsAnalyst(DummyLLM(), archive_snapshots=False)
+        analyst.news_fetcher = BrokenFetcher()
+
+        data = await analyst.gather_data("000001.SZ", "短期(1周)")
+
+        assert data["news_source"] == "unavailable"
+        assert data["_data_quality"]["is_available"] is False
+        assert "source exploded" in data["_data_quality"]["reason"]
 
 
 # ================================================================

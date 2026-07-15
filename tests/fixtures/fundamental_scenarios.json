@@ -1,0 +1,81 @@
+[
+  {
+    "name": "good_company_undervalued",
+    "timeframe": "中期(1月)",
+    "expected_direction": "bullish",
+    "expected_position": "好公司+低估",
+    "data": {
+      "quality_scorecard": {"total": 82, "rating": "excellent"},
+      "valuation_analysis": {"pe_percentile_3yr": 0.18},
+      "financials": {
+        "_trend": {
+          "profit_trend": "growing",
+          "earnings_quality": "improving"
+        }
+      },
+      "value_trap_analysis": {"is_trap": false, "signals": []},
+      "data_quality": {"overall_quality": 0.82, "confidence_ceiling": 0.85}
+    }
+  },
+  {
+    "name": "weak_company_cheap_value_trap",
+    "timeframe": "中期(1月)",
+    "expected_direction": "bearish",
+    "expected_position": "弱公司+低估",
+    "data": {
+      "quality_scorecard": {"total": 28, "rating": "weak"},
+      "valuation_analysis": {"pe_percentile_3yr": 0.12},
+      "financials": {
+        "_trend": {
+          "profit_trend": "declining",
+          "earnings_quality": "deteriorating"
+        }
+      },
+      "value_trap_analysis": {
+        "is_trap": true,
+        "signals": ["利润下滑", "盈利质量恶化"]
+      },
+      "data_quality": {"overall_quality": 0.74, "confidence_ceiling": 0.75}
+    }
+  },
+  {
+    "name": "good_company_overvalued",
+    "timeframe": "中期(1月)",
+    "expected_direction": "neutral",
+    "expected_position": "好公司+高估",
+    "data": {
+      "quality_scorecard": {"total": 78, "rating": "excellent"},
+      "valuation_analysis": {"pe_percentile_3yr": 0.88},
+      "financials": {
+        "_trend": {
+          "profit_trend": "growing",
+          "earnings_quality": "stable"
+        }
+      },
+      "value_trap_analysis": {"is_trap": false, "signals": []},
+      "data_quality": {"overall_quality": 0.80, "confidence_ceiling": 0.82}
+    }
+  },
+  {
+    "name": "heavily_missing_data",
+    "timeframe": "短期(1周)",
+    "expected_direction": "neutral",
+    "expected_position": "质量不可评分+估值分位未知",
+    "data": {
+      "quality_scorecard": {"total": 35, "rating": "weak"},
+      "valuation_analysis": {},
+      "financials": {
+        "_trend": {
+          "profit_trend": "unknown",
+          "earnings_quality": "unknown"
+        }
+      },
+      "value_trap_analysis": {"is_trap": false, "signals": []},
+      "data_quality": {
+        "overall_quality": 0.25,
+        "confidence_ceiling": 0.40,
+        "data_gaps": ["pe_percentile_3yr", "roe_pct", "profit_yoy_pct"]
+      }
+    }
+  }
+]

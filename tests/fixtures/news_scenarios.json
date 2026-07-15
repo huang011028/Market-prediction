@@ -1,0 +1,137 @@
+[
+  {
+    "name": "positive_earnings_catalyst",
+    "timeframe": "短期(1周)",
+    "expected_direction": "bullish",
+    "expected_event_bucket": "positive_catalyst",
+    "data": {
+      "symbol": "0700",
+      "company_name": "腾讯控股",
+      "_market": "HK",
+      "news_count": 8,
+      "date_range": "2026-06-29 ~ 2026-07-06",
+      "news_source": "eastmoney+sina",
+      "sources_used": ["eastmoney", "sina"],
+      "_data_quality": {"score": 0.95, "news_count": 8, "sources": ["eastmoney", "sina"], "is_available": true},
+      "preprocessing": {
+        "sentiment_stats": {
+          "positive": 5,
+          "negative": 1,
+          "neutral": 1,
+          "unknown": 1,
+          "weighted_positive_score": 4.6,
+          "weighted_negative_score": 0.5
+        },
+        "category_breakdown": {"earnings": 4, "rating": 2, "product": 1, "other": 1},
+        "anomaly_flags": {},
+        "top_news": [
+          {"title": "腾讯Q2营收利润超预期", "source": "东方财富", "time": "2026-07-06", "_sentiment": "positive", "_category": "earnings", "_time_weight": 1.0},
+          {"title": "多家投行上调腾讯目标价", "source": "新浪财经", "time": "2026-07-06", "_sentiment": "positive", "_category": "rating", "_time_weight": 1.0},
+          {"title": "腾讯云业务毛利率改善", "source": "证券时报", "time": "2026-07-05", "_sentiment": "positive", "_category": "earnings", "_time_weight": 0.8},
+          {"title": "游戏流水恢复增长", "source": "东方财富", "time": "2026-07-05", "_sentiment": "positive", "_category": "product", "_time_weight": 0.8},
+          {"title": "部分业务成本仍高", "source": "21财经", "time": "2026-07-04", "_sentiment": "negative", "_category": "earnings", "_time_weight": 0.5}
+        ]
+      }
+    }
+  },
+  {
+    "name": "negative_policy_shock",
+    "timeframe": "短期(1周)",
+    "expected_direction": "bearish",
+    "expected_event_bucket": "negative_catalyst",
+    "data": {
+      "symbol": "0700",
+      "company_name": "腾讯控股",
+      "_market": "HK",
+      "news_count": 7,
+      "date_range": "2026-06-29 ~ 2026-07-06",
+      "news_source": "eastmoney+sina",
+      "sources_used": ["eastmoney", "sina"],
+      "_data_quality": {"score": 0.9, "news_count": 7, "sources": ["eastmoney", "sina"], "is_available": true},
+      "preprocessing": {
+        "sentiment_stats": {
+          "positive": 1,
+          "negative": 5,
+          "neutral": 1,
+          "unknown": 0,
+          "weighted_positive_score": 0.4,
+          "weighted_negative_score": 4.1
+        },
+        "category_breakdown": {"policy": 4, "earnings": 1, "other": 2},
+        "anomaly_flags": {},
+        "top_news": [
+          {"title": "游戏行业监管趋严", "source": "东方财富", "time": "2026-07-06", "_sentiment": "negative", "_category": "policy", "_time_weight": 1.0},
+          {"title": "版号发放放缓引发担忧", "source": "新浪财经", "time": "2026-07-06", "_sentiment": "negative", "_category": "policy", "_time_weight": 1.0},
+          {"title": "腾讯相关业务面临监管压力", "source": "证券时报", "time": "2026-07-05", "_sentiment": "negative", "_category": "policy", "_time_weight": 0.8},
+          {"title": "云业务成本上升", "source": "21财经", "time": "2026-07-05", "_sentiment": "negative", "_category": "earnings", "_time_weight": 0.8}
+        ]
+      }
+    }
+  },
+  {
+    "name": "sentiment_divergence",
+    "timeframe": "短期(1周)",
+    "expected_direction": "neutral",
+    "expected_event_bucket": "mixed",
+    "data": {
+      "symbol": "0700",
+      "company_name": "腾讯控股",
+      "_market": "HK",
+      "news_count": 8,
+      "date_range": "2026-06-29 ~ 2026-07-06",
+      "news_source": "eastmoney+sina",
+      "sources_used": ["eastmoney", "sina"],
+      "_data_quality": {"score": 0.7, "news_count": 8, "sources": ["eastmoney", "sina"], "is_available": true},
+      "preprocessing": {
+        "sentiment_stats": {
+          "positive": 4,
+          "negative": 4,
+          "neutral": 0,
+          "unknown": 0,
+          "weighted_positive_score": 2.5,
+          "weighted_negative_score": 2.3
+        },
+        "category_breakdown": {"corp_action": 3, "rating": 2, "policy": 2, "other": 1},
+        "anomaly_flags": {"sentiment_divergence": true, "sentiment_divergence_detail": "正面(4条)与负面(4条)新闻数量接近，市场情绪存在分歧"},
+        "top_news": [
+          {"title": "公司宣布回购计划", "source": "东方财富", "time": "2026-07-06", "_sentiment": "positive", "_category": "corp_action", "_time_weight": 1.0},
+          {"title": "大股东减持引发担忧", "source": "新浪财经", "time": "2026-07-06", "_sentiment": "negative", "_category": "corp_action", "_time_weight": 1.0},
+          {"title": "机构上调目标价", "source": "证券时报", "time": "2026-07-05", "_sentiment": "positive", "_category": "rating", "_time_weight": 0.8},
+          {"title": "行业监管趋严", "source": "21财经", "time": "2026-07-05", "_sentiment": "negative", "_category": "policy", "_time_weight": 0.8}
+        ]
+      }
+    }
+  },
+  {
+    "name": "sparse_news",
+    "timeframe": "短期(1周)",
+    "expected_direction": "neutral",
+    "expected_event_bucket": "positive_catalyst",
+    "data": {
+      "symbol": "0700",
+      "company_name": "腾讯控股",
+      "_market": "HK",
+      "news_count": 2,
+      "date_range": "2026-06-29 ~ 2026-07-06",
+      "news_source": "eastmoney",
+      "sources_used": ["eastmoney"],
+      "_data_quality": {"score": 0.3, "news_count": 2, "sources": ["eastmoney"], "is_available": true},
+      "preprocessing": {
+        "sentiment_stats": {
+          "positive": 2,
+          "negative": 0,
+          "neutral": 0,
+          "unknown": 0,
+          "weighted_positive_score": 1.8,
+          "weighted_negative_score": 0.0
+        },
+        "category_breakdown": {"rating": 2},
+        "anomaly_flags": {},
+        "top_news": [
+          {"title": "分析师上调目标价", "source": "东方财富", "time": "2026-07-06", "_sentiment": "positive", "_category": "rating", "_time_weight": 1.0},
+          {"title": "券商维持买入评级", "source": "东方财富", "time": "2026-07-05", "_sentiment": "positive", "_category": "rating", "_time_weight": 0.8}
+        ]
+      }
+    }
+  }
+]

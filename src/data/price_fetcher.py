@@ -11,11 +11,15 @@ from dataclasses import dataclass, asdict, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+import asyncio
 import logging
+import threading
+import time
 
 import pandas as pd
 import numpy as np
 
+from src.data import us_fallbacks
 from src.data.symbol_resolver import resolve_symbol, identify_market
 from src.data.technical_features import (
     build_recent_trend,
@@ -26,6 +30,7 @@ from src.data.technical_features import (
 )
 
 logger = logging.getLogger(__name__)
+_AKSHARE_HISTORY_LOCK = threading.Lock()
 
 # ================================================================
 # 数据结构
@@ -165,6 +170,16 @@ class PriceFetcher:
         df = df[(df.index >= start_ts) & (df.index <= as_of_ts)]
 
         if df.empty:
+            df = self._fetch_ohlcv_history_window(
+                info.symbol,
+                market,
+                start_ts,
+                as_of_ts,
+            )
+            df = self._ensure_datetime_index(df)
+            df = df[(df.index >= start_ts) & (df.index <= as_of_ts)]
+
+        if df.empty:
             raise ValueError(f"无法获取 {original_symbol} 在 {as_of_ts.date()} 前的行情数据")
 
         return await self._build_price_data(
@@ -176,6 +191,114 @@ class PriceFetcher:
             include_intraday_context=False,
             name=info.name,
         )
+
+    async def fetch_history_frame(
+        self,
+        symbol: str,
+        start_date: str | date | datetime,
+        end_date: str | date | datetime,
+        *,
+        point_in_time_safe: bool = False,
+    ) -> pd.DataFrame:
+        """Fetch history without blocking concurrent dataset preloads."""
+        return await asyncio.to_thread(
+            self._fetch_history_frame_sync,
+            symbol,
+            start_date,
+            end_date,
+            point_in_time_safe,
+        )
+
+    def _fetch_history_frame_sync(
+        self,
+        symbol: str,
+        start_date: str | date | datetime,
+        end_date: str | date | datetime,
+        point_in_time_safe: bool = False,
+    ) -> pd.DataFrame:
+        """Fetch one normalized OHLCV frame for bulk point-in-time replay.
+
+        Dataset builders should slice this frame per as-of date. This avoids
+        re-downloading the same symbol for every historical sample while still
+        keeping feature construction strictly truncated at each date.
+        """
+        info = resolve_symbol(symbol)
+        start_ts = self._to_timestamp(start_date)
+        end_ts = self._to_timestamp(end_date)
+        if end_ts < start_ts:
+            raise ValueError("历史行情结束日期早于开始日期")
+        df = pd.DataFrame()
+        if point_in_time_safe and info.market == "A":
+            try:
+                import akshare as ak
+            except Exception as exc:
+                logger.debug("A股 PIT raw 历史行情依赖不可用: %s", exc)
+                ak = None
+            raw = None
+            if ak is not None:
+                try:
+                    if info.symbol.startswith(("15", "16", "50", "51", "52", "56", "58")):
+                        raw = self._fetch_from_tencent(info.symbol, market="a", limit=1500)
+                    else:
+                        with _AKSHARE_HISTORY_LOCK:
+                            raw = ak.stock_zh_a_hist(
+                                symbol=info.symbol,
+                                period="daily",
+                                start_date=start_ts.strftime("%Y%m%d"),
+                                end_date=end_ts.strftime("%Y%m%d"),
+                                adjust="",
+                            )
+                except Exception as exc:
+                    logger.debug("A股 PIT raw 主历史源失败: %s", exc)
+                if raw is not None and not raw.empty:
+                    df = self._normalize_dataframe(raw)
+            needs_full_history = (
+                df.empty
+                or (
+                    isinstance(df.index, pd.DatetimeIndex)
+                    and df.index.min() > start_ts + pd.Timedelta(days=30)
+                )
+            )
+            if ak is not None and needs_full_history:
+                full_raw = None
+                last_full_error = None
+                for attempt in range(3):
+                    try:
+                        with _AKSHARE_HISTORY_LOCK:
+                            full_raw = ak.stock_zh_a_daily(
+                                symbol=self._a_share_prefix(info.symbol),
+                                adjust="",
+                            )
+                        if full_raw is not None and not full_raw.empty:
+                            break
+                    except Exception as full_error:
+                        last_full_error = full_error
+                    if attempt < 2:
+                        time.sleep(0.8 * (attempt + 1))
+                if (full_raw is None or full_raw.empty) and last_full_error:
+                    logger.debug("A股全历史 raw 日线备用源失败: %s", last_full_error)
+                if full_raw is not None and not full_raw.empty:
+                    full_frame = self._normalize_dataframe(full_raw)
+                    full_frame = full_frame[
+                        (full_frame.index >= start_ts) & (full_frame.index <= end_ts)
+                    ]
+                    if not full_frame.empty and (
+                        df.empty or full_frame.index.min() < df.index.min()
+                    ):
+                        df = full_frame
+        if df.empty:
+            df = self._fetch_ohlcv_history_window(info.symbol, info.market, start_ts, end_ts)
+        df = self._ensure_datetime_index(df)
+        df = df[(df.index >= start_ts) & (df.index <= end_ts)]
+        if df.empty:
+            days = max(1, (end_ts - start_ts).days)
+            df = self._ensure_datetime_index(
+                self._fetch_ohlcv(info.symbol, info.market, self._period_for_lookback(days))
+            )
+            df = df[(df.index >= start_ts) & (df.index <= end_ts)]
+        if df.empty:
+            raise ValueError(f"无法获取 {info.symbol} 在 {start_ts.date()}~{end_ts.date()} 的历史行情")
+        return df.sort_index()
 
     async def fetch_close_near(
         self,
@@ -201,7 +324,52 @@ class PriceFetcher:
         df = self._ensure_datetime_index(df)
 
         if df.empty:
+            df = self._fetch_ohlcv_history_window(
+                symbol,
+                market,
+                target_ts - pd.Timedelta(days=max(tolerance_days, 10)),
+                target_ts + pd.Timedelta(days=max(tolerance_days, 10)),
+            )
+            df = self._ensure_datetime_index(df)
+
+        if df.empty:
             raise ValueError(f"无法获取 {symbol} 的行情数据")
+
+        try:
+            return self._select_close_near(
+                df,
+                symbol,
+                target_ts,
+                prefer=prefer,
+                tolerance_days=tolerance_days,
+            )
+        except ValueError as first_error:
+            df = self._fetch_ohlcv_history_window(
+                symbol,
+                market,
+                target_ts - pd.Timedelta(days=max(tolerance_days, 10)),
+                target_ts + pd.Timedelta(days=max(tolerance_days, 10)),
+            )
+            df = self._ensure_datetime_index(df)
+            if df.empty:
+                raise first_error
+            return self._select_close_near(
+                df,
+                symbol,
+                target_ts,
+                prefer=prefer,
+                tolerance_days=tolerance_days,
+            )
+
+    @staticmethod
+    def _select_close_near(
+        df: pd.DataFrame,
+        symbol: str,
+        target_ts: pd.Timestamp,
+        prefer: str,
+        tolerance_days: int,
+    ) -> float:
+        """从已加载 K 线中选择目标日期附近收盘价。"""
 
         if prefer == "on_or_before":
             candidates = df[df.index <= target_ts]
@@ -225,6 +393,68 @@ class PriceFetcher:
             )
 
         return float(df.loc[chosen_date, "close"])
+
+    async def fetch_close_window(
+        self,
+        symbol: str,
+        start_date: str | date | datetime,
+        end_date: str | date | datetime,
+    ) -> pd.Series:
+        """获取一个历史验证窗口内的收盘价序列。"""
+        info = resolve_symbol(symbol)
+        symbol = info.symbol
+        market = info.market
+        start_ts = self._to_timestamp(start_date)
+        end_ts = self._to_timestamp(end_date)
+        if end_ts < start_ts:
+            raise ValueError("验证窗口结束日期早于开始日期")
+
+        days_from_today = max((pd.Timestamp.now().normalize() - start_ts).days, 0)
+        fetch_days = days_from_today + max((end_ts - start_ts).days, 1) + 5
+        df = self._fetch_ohlcv(symbol, market, self._period_for_lookback(fetch_days))
+        df = self._ensure_datetime_index(df)
+        window = df[(df.index >= start_ts) & (df.index <= end_ts)]
+
+        if window.empty:
+            df = self._fetch_ohlcv_history_window(symbol, market, start_ts, end_ts)
+            df = self._ensure_datetime_index(df)
+            window = df[(df.index >= start_ts) & (df.index <= end_ts)]
+
+        if window.empty or "close" not in window.columns:
+            raise ValueError(
+                f"{symbol} 在 {start_ts.date()}~{end_ts.date()} 没有可用收盘价"
+            )
+        return window["close"].astype(float).sort_index()
+
+    async def fetch_trading_horizon(
+        self,
+        symbol: str,
+        as_of: str | date | datetime,
+        trading_days: int,
+        calendar_hint_days: Optional[int] = None,
+    ) -> pd.Series:
+        """Return exactly the next N available trading closes after ``as_of``.
+
+        The wider calendar window handles public holidays consistently across
+        A/HK/US markets.  A V3 label is not produced when fewer than N closes
+        exist, so a nominal 5-day target can no longer silently become a
+        3-trading-day target around a holiday.
+        """
+        as_of_ts = self._to_timestamp(as_of)
+        count = max(1, int(trading_days))
+        hint = max(int(calendar_hint_days or 0), count * 3, 14)
+        closes = await self.fetch_close_window(
+            symbol,
+            as_of_ts + pd.Timedelta(days=1),
+            as_of_ts + pd.Timedelta(days=hint),
+        )
+        closes = closes[closes.index > as_of_ts].sort_index().head(count)
+        if len(closes) < count:
+            raise ValueError(
+                f"{symbol} 在 {as_of_ts.date()} 后只有 {len(closes)} 个交易日，"
+                f"不足目标 {count} 个交易日"
+            )
+        return closes
 
     async def _build_price_data(
         self,
@@ -401,6 +631,103 @@ class PriceFetcher:
         else:
             return self._fetch_us_share(symbol, period)
 
+    def _fetch_ohlcv_history_window(
+        self,
+        symbol: str,
+        market: str,
+        start_ts: pd.Timestamp,
+        end_ts: pd.Timestamp,
+    ) -> pd.DataFrame:
+        """为历史回测按明确日期区间补拉 K 线。
+
+        腾讯行情对港股/部分美股通常只返回最近一段数据，当前分析够用，
+        但回测会因为 as_of 较早而切片为空。这个兜底只在 fetch_as_of
+        的初始窗口为空时触发，避免影响实时分析路径。
+        """
+        start_date = start_ts.strftime("%Y%m%d")
+        end_date = end_ts.strftime("%Y%m%d")
+
+        if market == "A":
+            if symbol.startswith(("15", "16", "50", "51", "52", "56", "58")):
+                df = self._fetch_from_tencent(symbol, market="a", limit=1500)
+                if df is not None and not df.empty:
+                    return df[(df.index >= start_ts) & (df.index <= end_ts)]
+            try:
+                import akshare as ak
+
+                with _AKSHARE_HISTORY_LOCK:
+                    df = ak.stock_zh_a_hist(
+                        symbol=symbol,
+                        period="daily",
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust="qfq",
+                    )
+                if df is not None and not df.empty:
+                    logger.info(f"akshare 历史窗口获取A股 {len(df)} 条K线")
+                    return self._normalize_dataframe(df)
+            except Exception as e:
+                logger.debug(f"A股历史窗口获取失败: {e}")
+            return pd.DataFrame()
+
+        if market == "HK":
+            df = self._fetch_from_tencent(symbol.zfill(5), market="hk", limit=1000)
+            if df is not None and not df.empty:
+                logger.info(f"腾讯历史窗口获取港股 {len(df)} 条K线")
+                return df
+
+            try:
+                import akshare as ak
+
+                df = ak.stock_hk_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="qfq",
+                )
+                if df is not None and not df.empty:
+                    logger.info(f"akshare 历史窗口获取港股 {len(df)} 条K线")
+                    return self._normalize_dataframe(df)
+            except Exception as e:
+                logger.debug(f"港股 akshare 历史窗口失败: {e}")
+
+            try:
+                return self._fetch_yfinance_range(
+                    f"{symbol}.HK",
+                    start_ts,
+                    end_ts + pd.Timedelta(days=1),
+                )
+            except Exception as e:
+                logger.debug(f"港股 yfinance 历史窗口失败: {e}")
+            return pd.DataFrame()
+
+        df = us_fallbacks.fetch_us_ohlcv_akshare(
+            symbol,
+            start_date=start_date,
+        )
+        if df is not None and not df.empty:
+            logger.info(f"akshare 历史窗口获取美股 {len(df)} 条K线")
+            return self._normalize_dataframe(df)
+
+        df = us_fallbacks.fetch_us_ohlcv_stooq(
+            symbol,
+            start_date=start_ts.strftime("%Y-%m-%d"),
+        )
+        if df is not None and not df.empty:
+            logger.info(f"Stooq 历史窗口获取美股 {len(df)} 条K线")
+            return self._normalize_dataframe(df)
+
+        try:
+            return self._fetch_yfinance_range(
+                symbol,
+                start_ts,
+                end_ts + pd.Timedelta(days=1),
+            )
+        except Exception as e:
+            logger.debug(f"美股 yfinance 历史窗口失败: {e}")
+        return pd.DataFrame()
+
     def _fetch_a_share(self, symbol: str, period: str) -> pd.DataFrame:
         """获取 A 股日 K 线
 
@@ -439,9 +766,10 @@ class PriceFetcher:
 
         # === 方案 2: stock_zh_a_hist（降级） ===
         try:
-            df = ak.stock_zh_a_hist(
-                symbol=symbol,
-                period="daily",
+            with _AKSHARE_HISTORY_LOCK:
+                df = ak.stock_zh_a_hist(
+                    symbol=symbol,
+                    period="daily",
                 start_date=start_date,
                 end_date="2099-12-31",
                 adjust="qfq",
@@ -529,12 +857,13 @@ class PriceFetcher:
     def _fetch_us_share(self, symbol: str, period: str) -> pd.DataFrame:
         """获取美股日 K 线
 
-        腾讯API(中概股) → yfinance
+        腾讯API(中概股) → akshare美股日线 → Stooq → yfinance
         """
+        start_date = self._start_date(period)
+
         # 方案 1: 腾讯（中概股可能支持）
         df = self._fetch_from_tencent(symbol, market="us")
         if df is not None and not df.empty:
-            start_date = self._start_date(period)
             start_dt = pd.to_datetime(start_date)
             if isinstance(df.index, pd.DatetimeIndex):
                 df = df[df.index >= start_dt]
@@ -542,7 +871,19 @@ class PriceFetcher:
                 logger.info(f"腾讯API 获取美股 {len(df)} 条K线")
                 return df
 
-        # 方案 2: yfinance
+        # 方案 2: akshare 美股日线
+        df = us_fallbacks.fetch_us_ohlcv_akshare(symbol, start_date=start_date)
+        if df is not None and not df.empty:
+            logger.info(f"akshare 获取美股 {len(df)} 条K线")
+            return self._normalize_dataframe(df)
+
+        # 方案 3: Stooq CSV（免费日线；若遇到浏览器校验会自动跳过）
+        df = us_fallbacks.fetch_us_ohlcv_stooq(symbol, start_date=start_date)
+        if df is not None and not df.empty:
+            logger.info(f"Stooq 获取美股 {len(df)} 条K线")
+            return self._normalize_dataframe(df)
+
+        # 方案 4: yfinance
         import time
         time.sleep(2)
         return self._fetch_yfinance(symbol, period)
@@ -551,7 +892,12 @@ class PriceFetcher:
     # 腾讯行情 API（支持 A股/港股/部分美股）
     # ================================================================
 
-    def _fetch_from_tencent(self, code: str, market: str = "hk") -> Optional[pd.DataFrame]:
+    def _fetch_from_tencent(
+        self,
+        code: str,
+        market: str = "hk",
+        limit: int = 200,
+    ) -> Optional[pd.DataFrame]:
         """从腾讯行情 API 获取日K线数据
 
         API: https://web.ifzq.gtimg.cn/appstock/app/fqkline/get
@@ -570,10 +916,10 @@ class PriceFetcher:
             else:
                 qt_code = code
 
-            # 获取日K线（前复权，取最近 200 个交易日）
+            # 获取日K线（前复权，默认取最近 200 个交易日）
             url = (
                 f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-                f"?param={qt_code},day,,,200,qfq"
+                f"?param={qt_code},day,,,{limit},qfq"
             )
             resp = requests.get(url, timeout=15, verify=False)
             data = resp.json()
@@ -888,11 +1234,17 @@ class PriceFetcher:
         trend = []
         for idx, row in df.iterrows():
             close = float(row["close"])
+            open_price = float(row.get("open", close) or close)
+            high_price = float(row.get("high", max(open_price, close)) or max(open_price, close))
+            low_price = float(row.get("low", min(open_price, close)) or min(open_price, close))
             change_pct = ((close / first_close - 1) * 100) if first_close else 0.0
             dt = pd.Timestamp(idx)
             trend.append({
                 "time": dt.strftime("%Y-%m-%d %H:%M"),
                 "date": dt.date().isoformat(),
+                "open": round(open_price, 2),
+                "high": round(max(high_price, open_price, close), 2),
+                "low": round(min(low_price, open_price, close), 2),
                 "close": round(close, 2),
                 "volume": float(row.get("volume", 0) or 0),
                 "change_pct": round(change_pct, 2),
@@ -934,6 +1286,45 @@ class PriceFetcher:
                     raise
 
         raise last_error or RuntimeError(f"yfinance 获取 {symbol} 失败")
+
+    def _fetch_yfinance_range(
+        self,
+        symbol: str,
+        start_ts: pd.Timestamp,
+        end_ts: pd.Timestamp,
+    ) -> pd.DataFrame:
+        """通过 yfinance 按明确日期区间获取历史数据。"""
+        import time
+        import yfinance as yf
+
+        last_error = None
+        for attempt in range(3):
+            try:
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(
+                    start=start_ts.date().isoformat(),
+                    end=end_ts.date().isoformat(),
+                )
+                if df.empty:
+                    raise ValueError(f"yfinance 返回空历史窗口: {symbol}")
+                df = df.rename(columns={
+                    "Open": "open", "High": "high",
+                    "Low": "low", "Close": "close",
+                    "Volume": "volume",
+                })
+                return self._normalize_dataframe(df)
+            except ImportError:
+                raise
+            except Exception as e:
+                last_error = e
+                if "Rate limited" in str(e) or "Too Many Requests" in str(e):
+                    raise
+                elif attempt < 2:
+                    time.sleep(2)
+                else:
+                    raise
+
+        raise last_error or RuntimeError(f"yfinance 历史窗口获取 {symbol} 失败")
 
     # ================================================================
     # 数据处理

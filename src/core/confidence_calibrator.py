@@ -66,6 +66,27 @@ class ConfidenceCalibrator:
 
         return {"calibrated": round(calibrated, 3), "original": raw_confidence, "adjustments": adjustments}
 
+    def calibrate(
+        self,
+        agent_name: str,
+        raw_confidence: float,
+        data_quality: float = 1.0,
+        timeframe: str = "短期",
+    ) -> float:
+        """Compatibility API returning only the calibrated probability."""
+        try:
+            quality = float(data_quality)
+        except (TypeError, ValueError):
+            quality = 1.0
+        bucket = "good" if quality >= 0.8 else "normal" if quality >= 0.6 else "partial" if quality >= 0.4 else "poor"
+        result = self.calibrate_confidence(
+            raw_confidence=float(raw_confidence),
+            agent_name=agent_name,
+            timeframe=timeframe,
+            data_quality=bucket,
+        )
+        return float(result["calibrated"])
+
     def calibrate_magnitude(
         self, predicted: Magnitude, atr_pct: float,
         adx: Optional[float] = None, timeframe: str = "短期",

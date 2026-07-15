@@ -257,6 +257,28 @@ def generate_quality_scorecard(financials: dict, valuation: dict,
     scorecard = QualityScorecard()
     total = 0
 
+    scoring_inputs = [
+        _safe_num(financials.get("roe_pct")),
+        _safe_num(financials.get("net_margin_pct")),
+        _safe_num(financials.get("revenue_yoy_pct")),
+        _safe_num(financials.get("profit_yoy_pct")),
+        pe_percentile,
+    ]
+    if all(value is None for value in scoring_inputs):
+        missing_entry = {
+            "score": 0,
+            "max": 0,
+            "note": "关键财务和估值分位均缺失，质量评分不可用",
+            "not_scorable": True,
+        }
+        scorecard.total = 0
+        scorecard.rating = "unknown"
+        scorecard.profitability = dict(missing_entry)
+        scorecard.growth = dict(missing_entry)
+        scorecard.valuation = dict(missing_entry)
+        scorecard.health = dict(missing_entry)
+        return scorecard
+
     # --- 维度1: 盈利能力 (30分) ---
     roe = _safe_num(financials.get("roe_pct"))
     net_margin = _safe_num(financials.get("net_margin_pct"))
@@ -362,15 +384,31 @@ FINANCIAL_FIELDS = [
     "profit_yoy", "gross_margin", "net_margin", "roe", "eps"
 ]
 VALUATION_FIELDS = ["pe", "pb", "market_cap", "dividend_yield"]
+FINANCIAL_FIELD_ALIASES = {
+    "latest_revenue": ("latest_revenue", "latest_revenue_100m"),
+    "latest_net_profit": ("latest_net_profit", "latest_net_profit_100m"),
+    "revenue_yoy": ("revenue_yoy", "revenue_yoy_pct"),
+    "profit_yoy": ("profit_yoy", "profit_yoy_pct"),
+    "gross_margin": ("gross_margin", "gross_margin_pct"),
+    "net_margin": ("net_margin", "net_margin_pct"),
+    "roe": ("roe", "roe_pct"),
+    "eps": ("eps",),
+}
+VALUATION_FIELD_ALIASES = {
+    "pe": ("pe",),
+    "pb": ("pb",),
+    "market_cap": ("market_cap", "market_cap_100m"),
+    "dividend_yield": ("dividend_yield", "dividend_yield_pct"),
+}
 
 
 def assess_data_quality(financials: dict, valuation: dict) -> DataQualityReport:
     """评估获取到的财务数据的质量"""
 
-    fin_filled = sum(1 for f in FINANCIAL_FIELDS if _safe_num(financials.get(f)) is not None)
+    fin_filled = sum(1 for f in FINANCIAL_FIELDS if _field_value(financials, FINANCIAL_FIELD_ALIASES[f]) is not None)
     fin_total = len(FINANCIAL_FIELDS)
 
-    val_filled = sum(1 for f in VALUATION_FIELDS if _safe_num(valuation.get(f)) is not None)
+    val_filled = sum(1 for f in VALUATION_FIELDS if _field_value(valuation, VALUATION_FIELD_ALIASES[f]) is not None)
     val_total = len(VALUATION_FIELDS)
 
     completeness = (fin_filled + val_filled) / max(1, fin_total + val_total)
@@ -383,10 +421,10 @@ def assess_data_quality(financials: dict, valuation: dict) -> DataQualityReport:
     # 识别数据缺口
     gaps = []
     for f in FINANCIAL_FIELDS:
-        if _safe_num(financials.get(f)) is None:
+        if _field_value(financials, FINANCIAL_FIELD_ALIASES[f]) is None:
             gaps.append(f)
     for f in VALUATION_FIELDS:
-        if _safe_num(valuation.get(f)) is None:
+        if _field_value(valuation, VALUATION_FIELD_ALIASES[f]) is None:
             gaps.append(f)
 
     return DataQualityReport(
@@ -398,6 +436,14 @@ def assess_data_quality(financials: dict, valuation: dict) -> DataQualityReport:
         data_gaps=gaps,
         confidence_ceiling=_calculate_confidence_ceiling(overall),
     )
+
+
+def _field_value(data: dict, aliases: tuple[str, ...]) -> Optional[float]:
+    for key in aliases:
+        value = _safe_num(data.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _calculate_confidence_ceiling(quality: float) -> float:

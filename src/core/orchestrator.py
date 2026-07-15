@@ -13,7 +13,7 @@
 import asyncio
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from .base_agent import BaseAgent
 from .result import AnalysisResult
@@ -37,6 +37,7 @@ class Orchestrator:
         """
         self._agents: dict[str, BaseAgent] = {}
         self.logger = logger or logging.getLogger("Orchestrator")
+        self.max_concurrent_agents: Optional[int] = None
 
     # ================================================================
     # Agent 管理
@@ -96,6 +97,7 @@ class Orchestrator:
         target: str,
         timeframe: str,
         agent_names: Optional[list[str]] = None,
+        on_agent_done: Optional[Callable[[str, int, int], None]] = None,
     ) -> list[AnalysisResult]:
         """并行运行指定的 Agent（或全部）
 
@@ -127,10 +129,13 @@ class Orchestrator:
             self.logger.warning("没有可用的 Agent，返回空结果")
             return []
 
+        max_concurrent_agents = self.max_concurrent_agents or len(agents_to_run)
+        run_mode = "顺序" if max_concurrent_agents <= 1 else "并行"
+
         # 打印启动信息
         agent_names_str = ", ".join(a.name for a in agents_to_run)
         self.logger.info(
-            f"🚀 开始并行分析 | 标的={target} | 周期={timeframe} | "
+            f"🚀 开始{run_mode}分析 | 标的={target} | 周期={timeframe} | "
             f"Agent=[{agent_names_str}]"
         )
         start_time = time.monotonic()
@@ -138,6 +143,36 @@ class Orchestrator:
         # === 并行执行 ===
         results: list[AnalysisResult] = []
         tasks: dict[str, asyncio.Task] = {}
+        completed_count = 0
+        total_count = len(agents_to_run)
+
+        if max_concurrent_agents <= 1:
+            success_count = 0
+            fail_count = 0
+            for agent in agents_to_run:
+                try:
+                    result = await agent.run(target, timeframe)
+                    results.append(result)
+                    success_count += 1
+                except Exception as e:
+                    fail_count += 1
+                    self.logger.error(f"Agent '{agent.name}' 执行失败: {e}", exc_info=True)
+                completed_count += 1
+                if on_agent_done:
+                    on_agent_done(agent.name, completed_count, total_count)
+
+            elapsed = time.monotonic() - start_time
+            self.logger.info(
+                f"🏁 分析完成 | 耗时={elapsed:.1f}s | "
+                f"成功={success_count} | 失败={fail_count}"
+            )
+            return results
+
+        def _notify_done(agent_name: str, _task: asyncio.Task) -> None:
+            nonlocal completed_count
+            completed_count += 1
+            if on_agent_done:
+                on_agent_done(agent_name, completed_count, total_count)
 
         try:
             async with asyncio.TaskGroup() as tg:
@@ -145,6 +180,9 @@ class Orchestrator:
                     task = tg.create_task(
                         agent.run(target, timeframe),
                         name=agent.name,
+                    )
+                    task.add_done_callback(
+                        lambda t, agent_name=agent.name: _notify_done(agent_name, t)
                     )
                     tasks[agent.name] = task
 
@@ -202,9 +240,15 @@ class Orchestrator:
         target: str,
         timeframe: str,
         agent_names: list[str],
+        on_agent_done: Optional[Callable[[str, int, int], None]] = None,
     ) -> list[AnalysisResult]:
         """运行指定的 Agent 列表（run_all 的别名，语义更明确）"""
-        return await self.run_all(target, timeframe, agent_names=agent_names)
+        return await self.run_all(
+            target,
+            timeframe,
+            agent_names=agent_names,
+            on_agent_done=on_agent_done,
+        )
 
     # ================================================================
     # 状态查询

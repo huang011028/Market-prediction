@@ -1,0 +1,668 @@
+{
+  "version": 1,
+  "updated_at": "2026-07-07T16:05:04.811866",
+  "metadata": {
+    "description": "Validated declarative skills used by prediction agents at runtime."
+  },
+  "skills": [
+    {
+      "skill_id": "technical.direction_policy.sr_volume_buckets.1897785639",
+      "agent_name": "近期股价分析师",
+      "skill_type": "direction_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "sr_zone_bucket": "squeeze",
+        "volume_bucket": "neutral"
+      },
+      "action": {
+        "type": "force_direction",
+        "direction": "bearish",
+        "confidence_floor": 0.5,
+        "confidence_cap": 0.6
+      },
+      "validation": {
+        "bucket_group": "sr_volume_buckets",
+        "sample_key": "sr_volume_bucket",
+        "bucket": "squeeze|neutral",
+        "training_samples": 12,
+        "training_unique_cases": 12,
+        "training_accuracy": 0.167,
+        "dominant_actual_direction": "bearish",
+        "dominant_actual_rate": 0.583,
+        "holdout": {
+          "baseline_accuracy": 0.2727,
+          "candidate_accuracy": 0.3333,
+          "accuracy_delta": 0.0606,
+          "holdout_samples": 66,
+          "changed_predictions": 6,
+          "reason": "composite candidate passed holdout"
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/technical_combo_rules_20260707/training_evaluation.md",
+        "holdout_report_path": "output/technical_combo_rules_20260707/holdout_validation/technical_improvement_validation.json",
+        "created_at": "2026-07-07T15:26:00+08:00"
+      },
+      "description": "历史 holdout 通过的技术方向规则: sr_volume_buckets/squeeze|neutral",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "runtime_policy"
+      ],
+      "created_at": "2026-07-07T15:26:00+08:00",
+      "updated_at": "2026-07-07T16:00:00+08:00"
+    },
+    {
+      "skill_id": "technical.direction_policy.regime_volume_buckets.9eed5f8a7e",
+      "agent_name": "近期股价分析师",
+      "skill_type": "direction_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "market_regime_bucket": "bull_trend",
+        "volume_bucket": "neutral"
+      },
+      "action": {
+        "type": "force_direction",
+        "direction": "bullish",
+        "confidence_floor": 0.5,
+        "confidence_cap": 0.6
+      },
+      "validation": {
+        "bucket_group": "regime_volume_buckets",
+        "sample_key": "regime_volume_bucket",
+        "bucket": "bull_trend|neutral",
+        "training_samples": 16,
+        "training_unique_cases": 16,
+        "training_accuracy": 0.438,
+        "dominant_actual_direction": "bullish",
+        "dominant_actual_rate": 0.688,
+        "holdout": {
+          "baseline_accuracy": 0.2727,
+          "candidate_accuracy": 0.3333,
+          "accuracy_delta": 0.0606,
+          "holdout_samples": 66,
+          "changed_predictions": 6,
+          "reason": "composite candidate passed holdout"
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/technical_combo_rules_20260707/training_evaluation.md",
+        "holdout_report_path": "output/technical_combo_rules_20260707/holdout_validation/technical_improvement_validation.json",
+        "created_at": "2026-07-07T15:26:00+08:00"
+      },
+      "description": "历史 holdout 通过的技术方向规则: regime_volume_buckets/bull_trend|neutral",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "runtime_policy"
+      ],
+      "created_at": "2026-07-07T15:26:00+08:00",
+      "updated_at": "2026-07-07T16:00:00+08:00"
+    },
+    {
+      "skill_id": "technical.confidence_policy.regime_sr_buckets.b294b0f6a1",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "market_regime_bucket": "transition_up",
+        "sr_zone_bucket": "near_support"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "regime_sr_buckets",
+        "sample_key": null,
+        "bucket": "transition_up|near_support",
+        "training_samples": 8,
+        "training_unique_cases": 8,
+        "training_accuracy": 0.125,
+        "training_avg_confidence": 0.494,
+        "dominant_actual_direction": "bearish",
+        "dominant_actual_rate": 0.5,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: regime_sr_buckets/transition_up|near_support",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811808",
+      "updated_at": "2026-07-07T16:05:04.811808"
+    },
+    {
+      "skill_id": "technical.confidence_policy.sr_volume_buckets.580fbd4821",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "sr_zone_bucket": "near_support",
+        "volume_bucket": "shrinking"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "sr_volume_buckets",
+        "sample_key": null,
+        "bucket": "near_support|shrinking",
+        "training_samples": 14,
+        "training_unique_cases": 14,
+        "training_accuracy": 0.143,
+        "training_avg_confidence": 0.578,
+        "dominant_actual_direction": "bearish",
+        "dominant_actual_rate": 0.429,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: sr_volume_buckets/near_support|shrinking",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811812",
+      "updated_at": "2026-07-07T16:05:04.811812"
+    },
+    {
+      "skill_id": "technical.confidence_policy.sr_volume_buckets.cd351afec0",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "sr_zone_bucket": "near_resistance",
+        "volume_bucket": "shrinking"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "sr_volume_buckets",
+        "sample_key": null,
+        "bucket": "near_resistance|shrinking",
+        "training_samples": 13,
+        "training_unique_cases": 13,
+        "training_accuracy": 0.154,
+        "training_avg_confidence": 0.412,
+        "dominant_actual_direction": "bearish",
+        "dominant_actual_rate": 0.538,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: sr_volume_buckets/near_resistance|shrinking",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811815",
+      "updated_at": "2026-07-07T16:05:04.811815"
+    },
+    {
+      "skill_id": "technical.confidence_policy.sr_volume_buckets.3914d2564d",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "sr_zone_bucket": "near_resistance",
+        "volume_bucket": "neutral"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "sr_volume_buckets",
+        "sample_key": null,
+        "bucket": "near_resistance|neutral",
+        "training_samples": 14,
+        "training_unique_cases": 14,
+        "training_accuracy": 0.214,
+        "training_avg_confidence": 0.396,
+        "dominant_actual_direction": "bullish",
+        "dominant_actual_rate": 0.5,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: sr_volume_buckets/near_resistance|neutral",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811817",
+      "updated_at": "2026-07-07T16:05:04.811817"
+    },
+    {
+      "skill_id": "technical.confidence_policy.regime_sr_buckets.ce6b0dd758",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "market_regime_bucket": "bull_trend",
+        "sr_zone_bucket": "near_support"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "regime_sr_buckets",
+        "sample_key": null,
+        "bucket": "bull_trend|near_support",
+        "training_samples": 9,
+        "training_unique_cases": 9,
+        "training_accuracy": 0.222,
+        "training_avg_confidence": 0.625,
+        "dominant_actual_direction": "neutral",
+        "dominant_actual_rate": 0.444,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: regime_sr_buckets/bull_trend|near_support",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811818",
+      "updated_at": "2026-07-07T16:05:04.811818"
+    },
+    {
+      "skill_id": "technical.confidence_policy.sr_volume_buckets.26d53d8e43",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "sr_zone_bucket": "near_support",
+        "volume_bucket": "neutral"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "sr_volume_buckets",
+        "sample_key": null,
+        "bucket": "near_support|neutral",
+        "training_samples": 13,
+        "training_unique_cases": 13,
+        "training_accuracy": 0.231,
+        "training_avg_confidence": 0.546,
+        "dominant_actual_direction": "bullish",
+        "dominant_actual_rate": 0.462,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: sr_volume_buckets/near_support|neutral",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811819",
+      "updated_at": "2026-07-07T16:05:04.811819"
+    },
+    {
+      "skill_id": "technical.confidence_policy.regime_volume_buckets.aff6ddaa1a",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "market_regime_bucket": "bull_trend",
+        "volume_bucket": "neutral"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "regime_volume_buckets",
+        "sample_key": null,
+        "bucket": "bull_trend|neutral",
+        "training_samples": 14,
+        "training_unique_cases": 14,
+        "training_accuracy": 0.286,
+        "training_avg_confidence": 0.6,
+        "dominant_actual_direction": "bullish",
+        "dominant_actual_rate": 0.429,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: regime_volume_buckets/bull_trend|neutral",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811820",
+      "updated_at": "2026-07-07T16:05:04.811820"
+    },
+    {
+      "skill_id": "technical.confidence_policy.regime_volume_buckets.61e7c6ecbb",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "market_regime_bucket": "bull_trend",
+        "volume_bucket": "shrinking"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "regime_volume_buckets",
+        "sample_key": null,
+        "bucket": "bull_trend|shrinking",
+        "training_samples": 10,
+        "training_unique_cases": 10,
+        "training_accuracy": 0.3,
+        "training_avg_confidence": 0.606,
+        "dominant_actual_direction": "bullish",
+        "dominant_actual_rate": 0.4,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: regime_volume_buckets/bull_trend|shrinking",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811821",
+      "updated_at": "2026-07-07T16:05:04.811821"
+    },
+    {
+      "skill_id": "technical.confidence_policy.regime_sr_buckets.ee5177711b",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "market_regime_bucket": "bull_trend",
+        "sr_zone_bucket": "near_resistance"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "regime_sr_buckets",
+        "sample_key": null,
+        "bucket": "bull_trend|near_resistance",
+        "training_samples": 15,
+        "training_unique_cases": 15,
+        "training_accuracy": 0.333,
+        "training_avg_confidence": 0.553,
+        "dominant_actual_direction": "bullish",
+        "dominant_actual_rate": 0.533,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: regime_sr_buckets/bull_trend|near_resistance",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811823",
+      "updated_at": "2026-07-07T16:05:04.811823"
+    },
+    {
+      "skill_id": "technical.confidence_policy.sr_volume_buckets.7769cd8f0c",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "sr_zone_bucket": "squeeze",
+        "volume_bucket": "shrinking"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "sr_volume_buckets",
+        "sample_key": null,
+        "bucket": "squeeze|shrinking",
+        "training_samples": 9,
+        "training_unique_cases": 9,
+        "training_accuracy": 0.222,
+        "training_avg_confidence": 0.45,
+        "dominant_actual_direction": "bearish",
+        "dominant_actual_rate": 0.444,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: sr_volume_buckets/squeeze|shrinking",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811824",
+      "updated_at": "2026-07-07T16:05:04.811824"
+    },
+    {
+      "skill_id": "technical.confidence_policy.regime_volume_buckets.281bf3deb9",
+      "agent_name": "近期股价分析师",
+      "skill_type": "confidence_policy",
+      "enabled": true,
+      "trigger_conditions": {
+        "market_regime_bucket": "transition_up",
+        "volume_bucket": "shrinking"
+      },
+      "action": {
+        "type": "cap_confidence",
+        "confidence_cap": 0.35
+      },
+      "validation": {
+        "bucket_group": "regime_volume_buckets",
+        "sample_key": null,
+        "bucket": "transition_up|shrinking",
+        "training_samples": 8,
+        "training_unique_cases": 8,
+        "training_accuracy": 0.25,
+        "training_avg_confidence": 0.384,
+        "dominant_actual_direction": "neutral",
+        "dominant_actual_rate": 0.375,
+        "holdout": {
+          "should_apply": true,
+          "reason": "candidate 在 holdout 上降低 Brier score",
+          "baseline_brier": 0.3068,
+          "candidate_brier": 0.2896,
+          "brier_delta": 0.0171,
+          "holdout_samples": 84,
+          "changed_predictions": 47,
+          "matched_samples": 47,
+          "confidence_cap": 0.35
+        }
+      },
+      "source": {
+        "generated_by": "Agent 改进工程师",
+        "data_source": "historical_kline_backtest",
+        "training_report_path": "output/agent_skill_registry_training_20260707/historical_agent_evaluation.json",
+        "holdout_report_path": "output/agent_skill_registry_confidence_holdout_20260707/technical_confidence_policy_validation.json",
+        "created_at": "2026-07-07T16:05:04.811084"
+      },
+      "description": "历史 holdout 通过的技术置信度封顶规则: regime_volume_buckets/transition_up|shrinking",
+      "tags": [
+        "technical",
+        "holdout_passed",
+        "confidence_cap"
+      ],
+      "created_at": "2026-07-07T16:05:04.811824",
+      "updated_at": "2026-07-07T16:05:04.811824"
+    }
+  ]
+}

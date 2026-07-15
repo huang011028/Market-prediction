@@ -7,19 +7,40 @@
 
 import logging
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
+from src.core.base_agent import BaseAgent
 from src.core.llm_client import LLMClient, create_llm_client
 from src.core.orchestrator import Orchestrator
+from src.core.prediction_target import (
+    default_target_spec,
+    direction_correct,
+    direction_from_return,
+)
+from src.core.return_residualizer import estimate_market_beta_from_trends
+from src.core.result import AnalysisResult
+from src.agents.fundamental_analyst import FundamentalAnalyst
+from src.agents.industry_analyst import IndustryAnalyst
+from src.agents.macro_analyst import MacroAnalyst
+from src.agents.news_analyst import NewsAnalyst
 from src.agents.technical_analyst import TechnicalAnalyst
 from src.agents.aggregator import Aggregator
+from src.data.news_snapshot_archive import NewsSnapshotArchive
+from src.data.point_in_time_snapshot_archive import PointInTimeSnapshotArchive
 from src.data.price_fetcher import PriceFetcher
+from src.data.symbol_resolver import resolve_symbol
 
 logger = logging.getLogger(__name__)
 
 AGENT_TECH = "近期股价分析师"
+AGENT_FUNDAMENTAL = "公司前景分析师"
+AGENT_INDUSTRY = "行业对比分析师"
+AGENT_MACRO = "国际形势分析师"
+AGENT_NEWS = "最新新闻分析师"
+SNAPSHOT_AGENTS = {AGENT_FUNDAMENTAL, AGENT_INDUSTRY, AGENT_MACRO, AGENT_NEWS}
 
 
 @dataclass
@@ -31,8 +52,15 @@ class BacktestConfig:
     timeframe: str = "短期(1周)"
     interval_days: int = 7             # 每隔几天做一次预测
     agents: list[str] = field(default_factory=lambda: [
-        "近期股价分析师", "公司前景分析师"
+        AGENT_TECH,
+        AGENT_FUNDAMENTAL,
+        AGENT_INDUSTRY,
+        AGENT_MACRO,
+        AGENT_NEWS,
     ])
+    snapshot_replay_mode: str = "reanalyze"  # reanalyze / frozen_result
+    max_snapshot_age_days: int = 120
+    max_news_snapshot_age_days: int = 7
 
 
 @dataclass
@@ -50,6 +78,17 @@ class BacktestResult:
     price_start: float
     price_end: float
     elapsed_seconds: float
+    window_max_change_pct: Optional[float] = None
+    window_min_change_pct: Optional[float] = None
+    prediction_target: dict = field(default_factory=dict)
+    expected_excess_return_pct: Optional[float] = None
+    prob_up: Optional[float] = None
+    prob_down: Optional[float] = None
+    prob_no_edge: Optional[float] = None
+    edge_score: Optional[float] = None
+    decision: str = ""
+    no_trade_reason: str = ""
+    agent_snapshot_lineage: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -91,6 +130,49 @@ class BacktestReport:
                 errors.append(abs(r.actual_change_pct - mid))
         return sum(errors) / len(errors) if errors else 0.0
 
+    @property
+    def high_confidence_non_neutral_coverage(self) -> float:
+        if not self.results:
+            return 0.0
+        selected = [
+            r for r in self.results
+            if r.predicted_direction != "neutral" and r.predicted_confidence >= 0.60
+        ]
+        return len(selected) / len(self.results)
+
+    @property
+    def high_edge_avg_directional_return_pct(self) -> float:
+        selected = [
+            r for r in self.results
+            if (r.edge_score or 0.0) >= 0.22 and r.predicted_direction in {"bullish", "bearish"}
+        ]
+        if not selected:
+            return 0.0
+        directional_returns = [
+            r.actual_change_pct if r.predicted_direction == "bullish" else -r.actual_change_pct
+            for r in selected
+        ]
+        return sum(directional_returns) / len(directional_returns)
+
+    @property
+    def brier_score(self) -> float:
+        if not self.results:
+            return 0.0
+        return sum(_multiclass_brier(r) for r in self.results) / len(self.results)
+
+    @property
+    def probability_calibration_error(self) -> float:
+        if not self.results:
+            return 0.0
+        errors = []
+        for r in self.results:
+            probs = _result_probabilities(r)
+            predicted_class = max(probs, key=probs.get)
+            confidence = probs[predicted_class]
+            hit = 1.0 if predicted_class == r.actual_direction else 0.0
+            errors.append(abs(confidence - hit))
+        return sum(errors) / len(errors) if errors else 0.0
+
     def to_dict(self) -> dict:
         return {
             "config": {
@@ -106,11 +188,30 @@ class BacktestReport:
             "magnitude_accuracy": round(self.magnitude_accuracy, 3),
             "avg_confidence": round(self.avg_confidence, 3),
             "avg_error_pct": round(self.avg_error_pct, 2),
+            "high_confidence_non_neutral_coverage": round(self.high_confidence_non_neutral_coverage, 3),
+            "high_edge_avg_directional_return_pct": round(self.high_edge_avg_directional_return_pct, 2),
+            "brier_score": round(self.brier_score, 4),
+            "probability_calibration_error": round(self.probability_calibration_error, 4),
             "results": [
                 {
                     "date": r.date,
                     "predicted": f"{r.predicted_direction} {r.predicted_min}~{r.predicted_max}%",
                     "actual": f"{r.actual_direction} {r.actual_change_pct:+.2f}%",
+                    "decision": r.decision,
+                    "no_trade_reason": r.no_trade_reason,
+                    "expected_excess_return_pct": r.expected_excess_return_pct,
+                    "edge_score": r.edge_score,
+                    "probabilities": {
+                        "up": r.prob_up,
+                        "down": r.prob_down,
+                        "no_edge": r.prob_no_edge,
+                    },
+                    "window": {
+                        "max_pct": r.window_max_change_pct,
+                        "min_pct": r.window_min_change_pct,
+                    },
+                    "prediction_target": r.prediction_target,
+                    "agent_snapshot_lineage": r.agent_snapshot_lineage,
                     "direction_correct": r.direction_correct,
                     "magnitude_hit": r.magnitude_hit,
                     "elapsed_s": round(r.elapsed_seconds, 1),
@@ -131,9 +232,54 @@ class BacktestReport:
             f"  幅度命中率: {self.magnitude_accuracy:.1%}",
             f"  平均置信度: {self.avg_confidence:.1%}",
             f"  平均误差:    {self.avg_error_pct:.2f}%",
+            f"  高置信非中性覆盖率: {self.high_confidence_non_neutral_coverage:.1%}",
+            f"  高边际方向收益: {self.high_edge_avg_directional_return_pct:+.2f}%",
+            f"  Brier: {self.brier_score:.4f}",
+            f"  概率校准误差: {self.probability_calibration_error:.4f}",
             "=" * 50,
         ]
         return "\n".join(lines)
+
+
+def _result_probabilities(result: BacktestResult) -> dict[str, float]:
+    up = _coerce_probability(result.prob_up)
+    down = _coerce_probability(result.prob_down)
+    neutral = _coerce_probability(result.prob_no_edge)
+    if up is None or down is None or neutral is None:
+        confidence = max(0.0, min(1.0, float(result.predicted_confidence or 0.0)))
+        residual = 1.0 - confidence
+        if result.predicted_direction == "bullish":
+            up, down, neutral = confidence, residual * 0.35, residual * 0.65
+        elif result.predicted_direction == "bearish":
+            down, up, neutral = confidence, residual * 0.35, residual * 0.65
+        else:
+            neutral, up, down = confidence, residual * 0.5, residual * 0.5
+    total = max(float(up or 0.0) + float(down or 0.0) + float(neutral or 0.0), 1e-9)
+    return {
+        "bullish": float(up or 0.0) / total,
+        "bearish": float(down or 0.0) / total,
+        "neutral": float(neutral or 0.0) / total,
+    }
+
+
+def _multiclass_brier(result: BacktestResult) -> float:
+    probs = _result_probabilities(result)
+    return sum(
+        (probs[label] - (1.0 if result.actual_direction == label else 0.0)) ** 2
+        for label in ("bullish", "bearish", "neutral")
+    ) / 3.0
+
+
+def _coerce_probability(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number > 1.0 and number <= 100.0:
+        number = number / 100.0
+    return max(0.0, min(1.0, number))
 
 
 class HistoricalTechnicalAnalyst(TechnicalAnalyst):
@@ -150,11 +296,81 @@ class HistoricalTechnicalAnalyst(TechnicalAnalyst):
         return data
 
 
+class _HistoricalSnapshotMixin:
+    """Inject archived data while preserving each analyst's current analysis path."""
+
+    def _set_historical_snapshot(self, data: dict, snapshot: dict) -> None:
+        self._historical_data = deepcopy(data)
+        self._historical_snapshot = deepcopy(snapshot)
+
+    async def gather_data(self, target: str, timeframe: str) -> dict:
+        data = deepcopy(self._historical_data)
+        data["_point_in_time_replay"] = {
+            "snapshot_id": self._historical_snapshot.get("snapshot_id"),
+            "as_of": self._historical_snapshot.get("as_of"),
+            "source_kind": self._historical_snapshot.get("source_kind"),
+            "lineage": self._historical_snapshot.get("lineage") or {},
+        }
+        return data
+
+
+class HistoricalFundamentalAnalyst(_HistoricalSnapshotMixin, FundamentalAnalyst):
+    def __init__(self, llm: LLMClient, data: dict, snapshot: dict):
+        super().__init__(llm)
+        self._set_historical_snapshot(data, snapshot)
+
+
+class HistoricalIndustryAnalyst(_HistoricalSnapshotMixin, IndustryAnalyst):
+    def __init__(self, llm: LLMClient, data: dict, snapshot: dict):
+        super().__init__(llm)
+        self._set_historical_snapshot(data, snapshot)
+
+
+class HistoricalMacroAnalyst(_HistoricalSnapshotMixin, MacroAnalyst):
+    def __init__(self, llm: LLMClient, data: dict, snapshot: dict):
+        super().__init__(llm)
+        self._set_historical_snapshot(data, snapshot)
+
+
+class HistoricalNewsAnalyst(_HistoricalSnapshotMixin, NewsAnalyst):
+    def __init__(self, llm: LLMClient, data: dict, snapshot: dict):
+        super().__init__(llm, archive_snapshots=False)
+        self._set_historical_snapshot(data, snapshot)
+
+
+class FrozenSnapshotResultAgent(BaseAgent):
+    """Return the exact result archived at prediction time."""
+
+    def __init__(self, result: dict):
+        self._result = AnalysisResult.from_dict(result)
+        super().__init__(
+            name=self._result.agent_name,
+            description="历史时点已归档预测结果",
+            llm=None,
+        )
+
+    async def run(self, target: str, timeframe: str) -> AnalysisResult:
+        return deepcopy(self._result)
+
+    async def gather_data(self, target: str, timeframe: str) -> dict:
+        return {}
+
+    def _get_system_prompt(self) -> str:
+        return ""
+
+
 class Backtester:
     """回测引擎"""
 
-    def __init__(self, llm: Optional[LLMClient] = None):
+    def __init__(
+        self,
+        llm: Optional[LLMClient] = None,
+        point_in_time_archive: Optional[PointInTimeSnapshotArchive] = None,
+        news_archive: Optional[NewsSnapshotArchive] = None,
+    ):
         self.llm = llm or create_llm_client()
+        self.point_in_time_archive = point_in_time_archive or PointInTimeSnapshotArchive()
+        self.news_archive = news_archive or NewsSnapshotArchive()
 
     async def run(self, config: BacktestConfig) -> BacktestReport:
         """执行回测"""
@@ -215,21 +431,47 @@ class Backtester:
         # --- 执行 Agent 分析 ---
         orchestrator = Orchestrator()
         active = []
+        snapshot_lineage: list[dict] = []
 
         if AGENT_TECH in config.agents:
             tech = HistoricalTechnicalAnalyst(self.llm, price_data, bt_date)
             orchestrator.register(tech)
             active.append(AGENT_TECH)
 
-        unsupported = [name for name in config.agents if name != AGENT_TECH]
-        if unsupported:
-            logger.warning(
-                "以下 Agent 暂无历史快照回放能力，回测中跳过: %s",
-                ", ".join(unsupported),
-            )
+        for agent_name in config.agents:
+            if agent_name not in SNAPSHOT_AGENTS:
+                continue
+            snapshot = self._find_snapshot(config.target, agent_name, bt_date, config)
+            if not snapshot:
+                logger.warning(
+                    "历史快照缺失，回测中跳过: agent=%s target=%s as_of=%s",
+                    agent_name,
+                    config.target,
+                    bt_date.date().isoformat(),
+                )
+                continue
+            agent = self._build_snapshot_agent(agent_name, snapshot, config.snapshot_replay_mode)
+            if agent is None:
+                logger.warning(
+                    "历史快照缺少可回放内容，跳过: agent=%s snapshot=%s mode=%s",
+                    agent_name,
+                    snapshot.get("snapshot_id"),
+                    config.snapshot_replay_mode,
+                )
+                continue
+            orchestrator.register(agent)
+            active.append(agent_name)
+            snapshot_lineage.append({
+                "agent_name": agent_name,
+                "snapshot_id": snapshot.get("snapshot_id"),
+                "as_of": snapshot.get("as_of") or snapshot.get("date"),
+                "source_kind": snapshot.get("source_kind"),
+                "schema_version": snapshot.get("schema_version"),
+                "replay_mode": config.snapshot_replay_mode,
+            })
 
         if not active:
-            raise ValueError("没有可历史回放的 Agent。当前回测仅支持近期股价分析师")
+            raise ValueError("没有可历史回放的 Agent：技术面需要历史 K 线，其余 Agent 需要合规快照")
 
         agent_results = await orchestrator.run_selected(
             config.target, config.timeframe, agent_names=active,
@@ -249,29 +491,120 @@ class Backtester:
         elapsed = time.monotonic() - start_t
 
         # --- 计算实际涨跌幅 ---
-        # 起点是回测日当时可见的收盘价；终点是预测周期结束后附近交易日收盘价。
+        # 起点是回测日当时可见的收盘价；终点收益用于幅度，窗口高低点用于方向障碍命中。
         price_start = price_data.price_current
 
-        valid_date = bt_date + timedelta(days=self._horizon_days(config.timeframe))
-        price_end = await pf.fetch_close_near(
-            config.target,
-            valid_date,
-            prefer="on_or_after",
-            tolerance_days=10,
+        target_spec = getattr(report, "prediction_target", None) or default_target_spec(
+            config.timeframe,
+            target=config.target,
+        )
+        if target_spec.target_type == "residual_return" and target_spec.benchmark_symbol:
+            try:
+                benchmark_history = await pf.fetch_as_of(
+                    target_spec.benchmark_symbol,
+                    bt_date,
+                    lookback_days=max(180, target_spec.beta_lookback_days),
+                )
+                target_spec.market_beta = estimate_market_beta_from_trends(
+                    price_data.recent_trend,
+                    benchmark_history.recent_trend,
+                    min_observations=target_spec.beta_min_observations,
+                )
+            except Exception:
+                target_spec.market_beta = None
+        valid_date = bt_date + timedelta(days=int(target_spec.horizon_calendar_days))
+        if target_spec.evaluation_mode == "fixed_horizon":
+            future_closes = await pf.fetch_trading_horizon(
+                config.target,
+                bt_date,
+                target_spec.horizon_trading_days,
+                target_spec.horizon_calendar_days + 10,
+            )
+            closes = future_closes
+            valid_date = closes.index[-1].to_pydatetime()
+        else:
+            closes = await pf.fetch_close_window(
+                config.target,
+                bt_date + timedelta(days=1),
+                valid_date,
+            )
+
+        if closes is None or len(closes) == 0:
+            raise ValueError("验证窗口内没有可用收盘价")
+
+        price_end = float(closes.iloc[-1])
+        target_changes = (closes / price_start - 1) * 100 if price_start > 0 else closes * 0
+        effective_changes = target_changes
+        if target_spec.target_type in {"excess_return", "residual_return"} and target_spec.benchmark_symbol:
+            try:
+                benchmark_start = await pf.fetch_close_near(
+                    target_spec.benchmark_symbol,
+                    bt_date,
+                    prefer="on_or_before",
+                    tolerance_days=10,
+                )
+                if target_spec.evaluation_mode == "fixed_horizon":
+                    benchmark_future = await pf.fetch_trading_horizon(
+                        target_spec.benchmark_symbol,
+                        bt_date,
+                        target_spec.horizon_trading_days,
+                        target_spec.horizon_calendar_days + 10,
+                    )
+                    benchmark_closes = benchmark_future
+                else:
+                    benchmark_closes = await pf.fetch_close_window(
+                        target_spec.benchmark_symbol,
+                        bt_date + timedelta(days=1),
+                        valid_date,
+                    )
+                benchmark_changes = (benchmark_closes / benchmark_start - 1) * 100
+                benchmark_aligned = benchmark_changes.reindex(
+                    target_changes.index,
+                    method="ffill",
+                ).bfill()
+                if not benchmark_aligned.isna().any():
+                    beta = (
+                        float(target_spec.market_beta)
+                        if target_spec.target_type == "residual_return"
+                        and target_spec.market_beta is not None
+                        else 1.0
+                    )
+                    effective_changes = target_changes - beta * benchmark_aligned
+            except Exception as e:
+                logger.debug(
+                    "回测基准收益计算失败，回退绝对收益: target=%s benchmark=%s error=%s",
+                    config.target,
+                    target_spec.benchmark_symbol,
+                    e,
+                )
+
+        actual_change = float(effective_changes.iloc[-1])
+        window_max = float(effective_changes.max())
+        window_min = float(effective_changes.min())
+
+        # 判断方向：固定到期收益 + 窗口障碍。
+        pred_dir = report.direction.value
+        dir_correct = direction_correct(
+            pred_dir,
+            actual_change,
+            window_max,
+            window_min,
+            target_spec,
         )
 
-        actual_change = (price_end / price_start - 1) * 100 if price_start > 0 else 0
-
-        # 判断方向
-        pred_dir = report.direction.value
-        if pred_dir == "bullish":
-            dir_correct = actual_change > 0.5
-        elif pred_dir == "bearish":
-            dir_correct = actual_change < -0.5
+        if target_spec.evaluation_mode == "fixed_horizon":
+            actual_dir = direction_from_return(actual_change, target_spec)
         else:
-            dir_correct = abs(actual_change) <= 1.0
-
-        actual_dir = "bullish" if actual_change > 0.5 else ("bearish" if actual_change < -0.5 else "neutral")
+            upper_hits = effective_changes[effective_changes >= target_spec.up_threshold_pct]
+            lower_hits = effective_changes[effective_changes <= target_spec.down_threshold_pct]
+            if not upper_hits.empty and not lower_hits.empty:
+                actual_dir = "bullish" if upper_hits.index[0] <= lower_hits.index[0] else "bearish"
+            elif not upper_hits.empty:
+                actual_dir = "bullish"
+            elif not lower_hits.empty:
+                actual_dir = "bearish"
+            else:
+                actual_dir = direction_from_return(actual_change, target_spec)
 
         # 幅度
         mag = report.magnitude
@@ -293,15 +626,90 @@ class Backtester:
             price_start=price_start,
             price_end=price_end,
             elapsed_seconds=elapsed,
+            window_max_change_pct=round(window_max, 2),
+            window_min_change_pct=round(window_min, 2),
+            prediction_target=target_spec.to_dict(),
+            expected_excess_return_pct=getattr(report, "expected_excess_return_pct", None),
+            prob_up=getattr(report, "prob_up", None),
+            prob_down=getattr(report, "prob_down", None),
+            prob_no_edge=getattr(report, "prob_no_edge", None),
+            edge_score=getattr(report, "edge_score", None),
+            decision=getattr(report, "decision", ""),
+            no_trade_reason=getattr(report, "no_trade_reason", ""),
+            agent_snapshot_lineage=snapshot_lineage,
         )
+
+    def _find_snapshot(
+        self,
+        target: str,
+        agent_name: str,
+        bt_date: datetime,
+        config: BacktestConfig,
+    ) -> Optional[dict]:
+        """Return the freshest eligible snapshot that was visible at bt_date."""
+        try:
+            identifiers = {str(target).upper(), str(resolve_symbol(target).symbol).upper()}
+        except Exception:
+            identifiers = {str(target).upper()}
+
+        end_date = bt_date.date().isoformat()
+        if agent_name == AGENT_NEWS:
+            candidates = self.news_archive.load_snapshots(end_date=end_date)
+            max_age = config.max_news_snapshot_age_days
+        else:
+            candidates = self.point_in_time_archive.load_snapshots(
+                agent_name=agent_name,
+                end_date=end_date,
+            )
+            max_age = config.max_snapshot_age_days
+
+        eligible: list[dict] = []
+        for snapshot in candidates:
+            snapshot_ids = {
+                str(snapshot.get("target") or "").upper(),
+                str(snapshot.get("symbol") or "").upper(),
+                str((snapshot.get("data") or {}).get("_resolved_symbol") or "").upper(),
+                str((snapshot.get("news_data") or {}).get("_resolved_symbol") or "").upper(),
+            }
+            if not identifiers.intersection(snapshot_ids):
+                continue
+            raw_date = str(snapshot.get("as_of") or snapshot.get("date") or "")[:10]
+            try:
+                snapshot_date = datetime.strptime(raw_date, "%Y-%m-%d")
+            except ValueError:
+                continue
+            age_days = (bt_date.date() - snapshot_date.date()).days
+            if 0 <= age_days <= max_age:
+                eligible.append(snapshot)
+        if not eligible:
+            return None
+        return max(eligible, key=lambda item: str(item.get("as_of") or item.get("date") or ""))
+
+    def _build_snapshot_agent(
+        self,
+        agent_name: str,
+        snapshot: dict,
+        replay_mode: str,
+    ) -> Optional[BaseAgent]:
+        if replay_mode not in {"reanalyze", "frozen_result"}:
+            raise ValueError("snapshot_replay_mode 必须是 reanalyze 或 frozen_result")
+        if replay_mode == "frozen_result":
+            result = snapshot.get("analysis_result") or {}
+            return FrozenSnapshotResultAgent(result) if result else None
+
+        data = snapshot.get("news_data") if agent_name == AGENT_NEWS else snapshot.get("data")
+        if not isinstance(data, dict) or not data:
+            return None
+        factories = {
+            AGENT_FUNDAMENTAL: HistoricalFundamentalAnalyst,
+            AGENT_INDUSTRY: HistoricalIndustryAnalyst,
+            AGENT_MACRO: HistoricalMacroAnalyst,
+            AGENT_NEWS: HistoricalNewsAnalyst,
+        }
+        factory = factories.get(agent_name)
+        return factory(self.llm, data, snapshot) if factory else None
 
     @staticmethod
     def _horizon_days(timeframe: str) -> int:
         """把预测周期映射为自然日 horizon。"""
-        if "周" in timeframe or "短期" in timeframe:
-            return 7
-        if "月" in timeframe or "中期" in timeframe:
-            return 30
-        if "季" in timeframe or "季度" in timeframe or "长期" in timeframe:
-            return 90
-        return 7
+        return default_target_spec(timeframe).horizon_calendar_days

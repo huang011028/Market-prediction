@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-07-07T15:26:00+08:00",
+  "source_report": "output/technical_combo_rules_20260707/holdout_validation/technical_improvement_validation.json",
+  "holdout_decision": {
+    "baseline_accuracy": 0.2727,
+    "candidate_accuracy": 0.3333,
+    "accuracy_delta": 0.0606,
+    "holdout_samples": 66,
+    "changed_predictions": 6,
+    "reason": "composite candidate passed holdout"
+  },
+  "rules": [
+    {
+      "bucket_group": "sr_volume_buckets",
+      "sample_key": "sr_volume_bucket",
+      "bucket": "squeeze|neutral",
+      "action": "force_bearish",
+      "training_samples": 12,
+      "training_unique_cases": 12,
+      "training_accuracy": 0.167,
+      "dominant_actual_direction": "bearish",
+      "dominant_actual_rate": 0.583,
+      "conditions": {
+        "sr_zone_bucket": "squeeze",
+        "volume_bucket": "neutral"
+      }
+    },
+    {
+      "bucket_group": "regime_volume_buckets",
+      "sample_key": "regime_volume_bucket",
+      "bucket": "bull_trend|neutral",
+      "action": "force_bullish",
+      "training_samples": 16,
+      "training_unique_cases": 16,
+      "training_accuracy": 0.438,
+      "dominant_actual_direction": "bullish",
+      "dominant_actual_rate": 0.688,
+      "conditions": {
+        "market_regime_bucket": "bull_trend",
+        "volume_bucket": "neutral"
+      }
+    }
+  ]
+}

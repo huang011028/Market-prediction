@@ -157,6 +157,10 @@ class IndustryConfidenceCalibrator:
             },
         }
 
+    def save(self):
+        """显式保存当前校准统计。"""
+        self._save_stats()
+
     def _get_bin_key(self, confidence: float) -> str:
         if confidence < 0.2: return "0.0-0.2"
         elif confidence < 0.4: return "0.2-0.4"

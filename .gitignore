@@ -1,5 +1,6 @@
 # 环境变量（含 API Keys）
 .env
+config/llm_models.local.json
 
 # Python
 __pycache__/
@@ -27,16 +28,17 @@ env/
 .DS_Store
 Thumbs.db
 
-# 输出目录（分析报告）
-output/*.md
-output/*.json
+# 输出目录（运行产物、模型和分析报告）
+output/**
 !output/.gitkeep
 
 # 日志
 logs/
 *.log
 
-# 缓存
+# 本地数据、数据库和缓存
+data/**
+!data/.gitkeep
 data/cache/
 data/calibration/
 data/*.db

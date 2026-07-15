@@ -1,0 +1,140 @@
+[
+  {
+    "name": "strong_industry_undervalued",
+    "timeframe": "中期(1月)",
+    "expected_direction": "bullish",
+    "expected_position": "性价比突出+行业复苏",
+    "data": {
+      "symbol": "002396",
+      "company_name": "星网锐捷",
+      "industry_name": "通信",
+      "data_source": "fixture",
+      "rank_in_industry": {
+        "pe_percentile": 0.18,
+        "roe_percentile": 0.22,
+        "valuation_label": "低PE+高ROE：性价比突出"
+      },
+      "value_score": {
+        "score": "excellent",
+        "value_ratio": 0.62,
+        "interpretation": "公司盈利能力优于行业，但估值偏低"
+      },
+      "industry_trend": {
+        "cycle": "recovery",
+        "phase": "复苏期",
+        "signal": "行业从低估中恢复，基本面改善",
+        "change_20d_pct": 4.5,
+        "change_60d_pct": 8.0
+      },
+      "data_quality": {
+        "overall": 0.82,
+        "has_constituents": true,
+        "has_trend": true,
+        "confidence_ceiling": 0.85
+      }
+    }
+  },
+  {
+    "name": "weak_industry_overvalued",
+    "timeframe": "中期(1月)",
+    "expected_direction": "bearish",
+    "expected_position": "相对偏贵+行业下行",
+    "data": {
+      "symbol": "002396",
+      "company_name": "星网锐捷",
+      "industry_name": "通信",
+      "data_source": "fixture",
+      "rank_in_industry": {
+        "pe_percentile": 0.88,
+        "roe_percentile": 0.78,
+        "valuation_label": "高PE+低ROE：估值偏高，需警惕"
+      },
+      "value_score": {
+        "score": "overpriced",
+        "value_ratio": 1.95,
+        "interpretation": "性价比差，估值显著高于盈利能力对应的合理水平"
+      },
+      "industry_trend": {
+        "cycle": "slowdown",
+        "phase": "衰退期",
+        "signal": "行业下行+估值仍贵，可能进一步下跌",
+        "change_20d_pct": -5.5,
+        "change_60d_pct": -12.0
+      },
+      "data_quality": {
+        "overall": 0.78,
+        "has_constituents": true,
+        "has_trend": true,
+        "confidence_ceiling": 0.80
+      }
+    }
+  },
+  {
+    "name": "rotation_overheated",
+    "timeframe": "短期(1周)",
+    "expected_direction": "neutral",
+    "expected_position": "相对合理+行业过热",
+    "data": {
+      "symbol": "002396",
+      "company_name": "星网锐捷",
+      "industry_name": "通信",
+      "data_source": "fixture",
+      "rank_in_industry": {
+        "pe_percentile": 0.58,
+        "roe_percentile": 0.45,
+        "valuation_label": "估值与盈利基本匹配"
+      },
+      "value_score": {
+        "score": "fair",
+        "value_ratio": 1.12,
+        "interpretation": "性价比一般，估值与盈利基本匹配"
+      },
+      "industry_trend": {
+        "cycle": "boom",
+        "phase": "繁荣期",
+        "signal": "行业处于景气高位，估值偏贵，追高风险大",
+        "change_20d_pct": 8.0,
+        "change_60d_pct": 15.0
+      },
+      "_rotation_signals": [
+        {
+          "signal_type": "momentum_reversal",
+          "description": "行业短线动量转弱",
+          "rotation_direction": "高→低",
+          "strength": 0.72
+        }
+      ],
+      "data_quality": {
+        "overall": 0.76,
+        "has_constituents": true,
+        "has_trend": true,
+        "confidence_ceiling": 0.75
+      }
+    }
+  },
+  {
+    "name": "heavily_missing_data",
+    "timeframe": "短期(1周)",
+    "expected_direction": "neutral",
+    "expected_position": "相对位置未知+趋势中性",
+    "data": {
+      "symbol": "002396",
+      "company_name": "星网锐捷",
+      "industry_name": "通信",
+      "data_source": "fixture",
+      "rank_in_industry": {},
+      "value_score": {
+        "score": "insufficient_data",
+        "interpretation": "数据不足，无法计算性价比评分"
+      },
+      "industry_trend": {},
+      "data_quality": {
+        "overall": 0.25,
+        "has_constituents": false,
+        "has_trend": false,
+        "confidence_ceiling": 0.35,
+        "notes": "缺少行业成分股和趋势数据"
+      }
+    }
+  }
+]

@@ -8,6 +8,7 @@ v2 改进：
 - 因为 stock_news_em 对港股代码（4 位数字）只能做关键词匹配，
   容易匹配到"3690美元/吨"等无关内容
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -36,9 +37,14 @@ async def fetch_from_eastmoney(
     """
     try:
         if market == "A":
-            return _fetch_a_share(symbol, max_items)
+            return await asyncio.to_thread(_fetch_a_share, symbol, max_items)
         elif market == "HK":
-            return _fetch_hk_share(symbol, max_items, company_names)
+            return await asyncio.to_thread(
+                _fetch_hk_share,
+                symbol,
+                max_items,
+                company_names,
+            )
         else:
             return None
     except Exception as e:

@@ -3,6 +3,7 @@
 
 通过爬取新浪财经个股新闻页获取 A 股和港股新闻。
 """
+import asyncio
 import re
 import logging
 from typing import Optional
@@ -33,9 +34,9 @@ async def fetch_from_sina(
     """
     try:
         if market == "A":
-            return _fetch_a_share_news(symbol, max_items)
+            return await asyncio.to_thread(_fetch_a_share_news, symbol, max_items)
         elif market == "HK":
-            return _fetch_hk_share_news(symbol, max_items)
+            return await asyncio.to_thread(_fetch_hk_share_news, symbol, max_items)
         else:
             return None
     except Exception as e:
@@ -280,4 +281,3 @@ def _filter_market_noise(items: list[dict], market: str) -> list[dict]:
         filtered.append(item)
 
     return filtered
-

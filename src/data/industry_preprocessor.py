@@ -43,10 +43,13 @@ class StockRankInIndustry:
     """标的在行业中的排名"""
     pe_rank: str = "N/A"              # "5/42"
     pe_percentile: Optional[float] = None
+    pb_rank: str = "N/A"
+    pb_percentile: Optional[float] = None
     roe_rank: str = "N/A"
     roe_percentile: Optional[float] = None
     valuation_label: str = "N/A"
     vs_median_pe: str = "N/A"
+    vs_median_pb: str = "N/A"
 
 
 @dataclass
@@ -127,7 +130,7 @@ def calculate_industry_metrics(peers: list[dict]) -> IndustryMetrics:
         if roe is not None and roe != 0:
             roe_values.append(roe)
 
-    if not pe_values:
+    if not (pe_values or pb_values or roe_values):
         return IndustryMetrics(sample_size=len(peers))
 
     pe_values_sorted = sorted(pe_values)
@@ -135,14 +138,14 @@ def calculate_industry_metrics(peers: list[dict]) -> IndustryMetrics:
     roe_values_sorted = sorted(roe_values)
 
     # 计算PE标准差
-    pe_mean = sum(pe_values) / len(pe_values)
+    pe_mean = sum(pe_values) / len(pe_values) if pe_values else None
     pe_std = (
         sum((x - pe_mean) ** 2 for x in pe_values) / len(pe_values)
-    ) ** 0.5 if pe_values else None
+    ) ** 0.5 if pe_values and pe_mean is not None else None
 
     return IndustryMetrics(
-        avg_pe=round(sum(pe_values) / len(pe_values), 2),
-        median_pe=round(pe_values_sorted[len(pe_values_sorted) // 2], 2),
+        avg_pe=round(sum(pe_values) / len(pe_values), 2) if pe_values else None,
+        median_pe=round(pe_values_sorted[len(pe_values_sorted) // 2], 2) if pe_values else None,
         avg_pb=round(sum(pb_values) / len(pb_values), 2) if pb_values else None,
         median_pb=round(pb_values_sorted[len(pb_values_sorted) // 2], 2) if pb_values else None,
         avg_roe=round(sum(roe_values) / len(roe_values), 2) if roe_values else None,
@@ -157,7 +160,7 @@ def calculate_industry_metrics(peers: list[dict]) -> IndustryMetrics:
 # ================================================================
 
 
-def calculate_industry_rank(stock_pe, stock_roe, peers: list[dict]) -> StockRankInIndustry:
+def calculate_industry_rank(stock_pe, stock_roe, peers: list[dict], stock_pb=None) -> StockRankInIndustry:
     """
     计算标的在行业中的排名。
 
@@ -189,12 +192,26 @@ def calculate_industry_rank(stock_pe, stock_roe, peers: list[dict]) -> StockRank
         rank.pe_rank = f"{pe_rank}/{len(pe_values)}"
         rank.pe_percentile = round(pe_rank / len(pe_values), 2)
 
+    # PB排名 (从低到高 = 从便宜到贵)
+    pb_values = sorted([
+        _safe_float(p.get("pb"))
+        for p in peers
+        if _safe_float(p.get("pb")) and _safe_float(p.get("pb")) > 0
+    ])
+    stock_pb_f = _safe_float(stock_pb)
+
+    if stock_pb_f and pb_values:
+        pb_rank = sum(1 for pb in pb_values if pb <= stock_pb_f)
+        rank.pb_rank = f"{pb_rank}/{len(pb_values)}"
+        rank.pb_percentile = round(pb_rank / len(pb_values), 2)
+
     # ROE排名 (从高到低 = 从好到差)
     roe_values = sorted([_safe_float(p.get("roe")) for p in peers if _safe_float(p.get("roe"))], reverse=True)
     stock_roe_f = _safe_float(stock_roe)
 
     if stock_roe_f and roe_values:
-        roe_rank = sum(1 for roe in roe_values if roe >= stock_roe_f) + 1
+        roe_rank = sum(1 for roe in roe_values if roe > stock_roe_f) + 1
+        roe_rank = min(max(roe_rank, 1), len(roe_values))
         rank.roe_rank = f"{roe_rank}/{len(roe_values)}"
         rank.roe_percentile = round(roe_rank / len(roe_values), 2)
 
@@ -224,6 +241,12 @@ def calculate_industry_rank(stock_pe, stock_roe, peers: list[dict]) -> StockRank
         if median_pe > 0:
             diff_pct = (stock_pe_f / median_pe - 1) * 100
             rank.vs_median_pe = f"{'+' if diff_pct > 0 else ''}{diff_pct:.0f}%"
+
+    if stock_pb_f and pb_values:
+        median_pb = pb_values[len(pb_values) // 2]
+        if median_pb > 0:
+            diff_pct = (stock_pb_f / median_pb - 1) * 100
+            rank.vs_median_pb = f"{'+' if diff_pct > 0 else ''}{diff_pct:.0f}%"
 
     return rank
 
@@ -524,13 +547,22 @@ def infer_industry_from_name(company_name: str) -> Optional[str]:
 
 KNOWN_HK_INDUSTRIES = {
     "0700": {"name": "互联网", "peers": ["9988", "9618", "9888", "1810"]},
-    "9988": {"name": "互联网", "peers": ["0700", "9618", "9888"]},
-    "9618": {"name": "互联网", "peers": ["0700", "9988", "9888"]},
-    "9888": {"name": "互联网", "peers": ["0700", "9988", "9618"]},
-    "1810": {"name": "互联网", "peers": ["0700", "9988"]},
+    "9988": {"name": "互联网", "peers": ["0700", "9618", "9888", "3690"]},
+    "9618": {"name": "互联网", "peers": ["0700", "9988", "9888", "3690"]},
+    "9888": {"name": "互联网", "peers": ["0700", "9988", "9618", "3690"]},
+    "1810": {"name": "互联网", "peers": ["0700", "9988", "3690"]},
+    "3690": {"name": "互联网", "peers": ["0700", "9988", "9618", "9888"]},
+    "1024": {"name": "互联网", "peers": ["0700", "9988", "9618", "3690"]},
+    "9999": {"name": "互联网", "peers": ["0700", "9988", "9618", "9888"]},
+    "9626": {"name": "互联网", "peers": ["0700", "9988", "9618", "3690"]},
+    "0981": {"name": "半导体", "peers": ["01347", "02382", "02018"]},
+    "00981": {"name": "半导体", "peers": ["01347", "02382", "02018"]},
+    "01347": {"name": "半导体", "peers": ["0981", "02382", "02018"]},
+    "02382": {"name": "半导体", "peers": ["0981", "01347", "02018"]},
+    "02018": {"name": "半导体", "peers": ["0981", "01347", "02382"]},
     "0941": {"name": "电信", "peers": ["0981", "1883", "00019"]},
     "0005": {"name": "金融", "peers": ["0011", "0388", "1299"]},
-    "0011": {"name": "金融", "peers": ["0005", "0388"]},
+    "0011": {"name": "金融", "peers": ["0005", "0388", "1299"]},
     "0388": {"name": "金融", "peers": ["0005", "0011", "1299"]},
     "1299": {"name": "保险", "peers": ["2318", "2628", "1336"]},
     "2318": {"name": "保险", "peers": ["1299", "2628"]},
@@ -542,11 +574,45 @@ KNOWN_HK_INDUSTRIES = {
     "0939": {"name": "银行", "peers": ["1398", "3988", "0939"]},
     "1398": {"name": "银行", "peers": ["0939", "3988"]},
     "3988": {"name": "银行", "peers": ["0939", "1398"]},
-    "0388": {"name": "金融", "peers": ["0005", "0011"]},
     "0688": {"name": "房地产", "peers": ["0012", "1109"]},
     "1044": {"name": "消费品", "peers": []},
     "0027": {"name": "消费/博彩", "peers": []},
-    "1177": {"name": "医药", "peers": ["2269", "1138"]},
+    "1177": {"name": "医药", "peers": ["2269", "1801", "6160", "1877"]},
+    "2269": {"name": "医药", "peers": ["1177", "1801", "6160", "1877"]},
+    "1801": {"name": "医药", "peers": ["1177", "2269", "6160", "1877"]},
+    "6160": {"name": "医药", "peers": ["1177", "2269", "1801", "1877"]},
+    "1877": {"name": "医药", "peers": ["1177", "2269", "1801", "6160"]},
+}
+
+
+# 港股 peer 参考快照。仅在实时 peer 数据不可用时使用，并在上游标记为
+# hk_peer_reference；数值只用于避免“完全缺失”，不提升到实时数据置信度。
+HK_PEER_REFERENCE = {
+    "0700": {"name": "腾讯控股", "pe": 18.0, "pb": 3.6, "roe": 18.0},
+    "9988": {"name": "阿里巴巴", "pe": 15.0, "pb": 1.8, "roe": 12.0},
+    "9618": {"name": "京东集团", "pe": 12.0, "pb": 1.7, "roe": 13.0},
+    "9888": {"name": "百度集团", "pe": 11.0, "pb": 1.4, "roe": 10.0},
+    "3690": {"name": "美团", "pe": 28.0, "pb": 5.0, "roe": 9.0},
+    "1810": {"name": "小米集团", "pe": 24.0, "pb": 3.0, "roe": 11.0},
+    "1024": {"name": "快手", "pe": 30.0, "pb": 4.0, "roe": 8.0},
+    "9999": {"name": "网易", "pe": 14.0, "pb": 3.0, "roe": 20.0},
+    "9626": {"name": "哔哩哔哩", "pe": None, "pb": 4.0, "roe": -8.0},
+    "0981": {"name": "中芯国际", "pe": 45.0, "pb": 2.0, "roe": 4.5},
+    "00981": {"name": "中芯国际", "pe": 45.0, "pb": 2.0, "roe": 4.5},
+    "01347": {"name": "华虹半导体", "pe": 38.0, "pb": 1.5, "roe": 4.0},
+    "02382": {"name": "舜宇光学科技", "pe": 26.0, "pb": 2.8, "roe": 10.0},
+    "02018": {"name": "瑞声科技", "pe": 24.0, "pb": 1.8, "roe": 8.0},
+    "0005": {"name": "汇丰控股", "pe": 9.5, "pb": 0.9, "roe": 10.5},
+    "0011": {"name": "恒生银行", "pe": 10.5, "pb": 1.1, "roe": 10.0},
+    "0388": {"name": "香港交易所", "pe": 30.0, "pb": 7.5, "roe": 24.0},
+    "1299": {"name": "友邦保险", "pe": 18.0, "pb": 2.0, "roe": 11.0},
+    "2318": {"name": "中国平安", "pe": 7.0, "pb": 0.8, "roe": 12.0},
+    "2628": {"name": "中国人寿", "pe": 10.0, "pb": 0.9, "roe": 8.0},
+    "2269": {"name": "药明生物", "pe": 28.0, "pb": 2.6, "roe": 7.0},
+    "1801": {"name": "信达生物", "pe": None, "pb": 4.0, "roe": -6.0},
+    "6160": {"name": "百济神州", "pe": None, "pb": 5.0, "roe": -10.0},
+    "1877": {"name": "君实生物", "pe": None, "pb": 2.8, "roe": -12.0},
+    "1177": {"name": "中国生物制药", "pe": 24.0, "pb": 2.4, "roe": 10.0},
 }
 
 
@@ -573,6 +639,7 @@ class IndustryReferenceCache:
         "白酒": {"pe": 25.0, "pb": 6.0, "roe": 25.0, "note": "近似参考值"},
         "证券": {"pe": 18.0, "pb": 1.3, "roe": 7.0, "note": "近似参考值"},
         "保险": {"pe": 12.0, "pb": 1.0, "roe": 12.0, "note": "近似参考值"},
+        "金融": {"pe": 12.0, "pb": 1.4, "roe": 12.0, "note": "近似参考值"},
         "医药": {"pe": 30.0, "pb": 4.0, "roe": 15.0, "note": "近似参考值"},
         "新能源": {"pe": 20.0, "pb": 3.0, "roe": 18.0, "note": "近似参考值"},
         "家电": {"pe": 15.0, "pb": 2.5, "roe": 20.0, "note": "近似参考值"},
@@ -657,7 +724,8 @@ class IndustryReferenceCache:
 
 def process_industry_data(stock_data: dict, industry_peers: list[dict],
                            industry_trend: dict = None,
-                           pe_percentile: float = None) -> dict:
+                           pe_percentile: float = None,
+                           reference_metrics: dict = None) -> dict:
     """
     行业对比数据主预处理函数。
 
@@ -666,26 +734,58 @@ def process_industry_data(stock_data: dict, industry_peers: list[dict],
         industry_peers: 行业成分股列表
         industry_trend: 行业近期涨跌幅 {"change_5d": ..., "change_20d": ..., "change_60d": ...}
         pe_percentile: 标的PE历史分位（可选）
+        reference_metrics: 无实时成分股时的行业参考指标 {"pe": ..., "pb": ..., "roe": ...}
 
     Returns:
         完整的预处理结果字典
     """
     result = {}
+    reference_metrics = reference_metrics or {}
+    peer_sources = {
+        str(peer.get("source") or "").lower()
+        for peer in (industry_peers or [])
+    }
+    has_reference_peers = bool(industry_peers) and all(
+        source == "reference" for source in peer_sources
+    )
 
     # 1. 行业平均估值
     if industry_peers:
         metrics = calculate_industry_metrics(industry_peers)
+        avg_pe = metrics.avg_pe or reference_metrics.get("pe")
+        median_pe = metrics.median_pe or reference_metrics.get("pe")
+        avg_pb = metrics.avg_pb or reference_metrics.get("pb")
+        median_pb = metrics.median_pb or reference_metrics.get("pb")
+        avg_roe = metrics.avg_roe or reference_metrics.get("roe")
+        median_roe = metrics.median_roe or reference_metrics.get("roe")
         result["industry_metrics"] = {
-            "avg_pe": metrics.avg_pe,
-            "median_pe": metrics.median_pe,
-            "avg_pb": metrics.avg_pb,
-            "median_pb": metrics.median_pb,
-            "avg_roe": metrics.avg_roe,
-            "median_roe": metrics.median_roe,
+            "avg_pe": avg_pe,
+            "median_pe": median_pe,
+            "avg_pb": avg_pb,
+            "median_pb": median_pb,
+            "avg_roe": avg_roe,
+            "median_roe": median_roe,
             "stock_count": metrics.sample_size,
             "pe_std": metrics.pe_std,
         }
+        if reference_metrics and (
+            metrics.avg_pe is None or metrics.avg_pb is None or metrics.avg_roe is None
+        ):
+            result["industry_metrics"]["reference_supplemented"] = True
         result["industry_peers_top"] = industry_peers[:10]  # 只保留前10
+    elif reference_metrics:
+        result["industry_metrics"] = {
+            "avg_pe": reference_metrics.get("pe"),
+            "median_pe": reference_metrics.get("pe"),
+            "avg_pb": reference_metrics.get("pb"),
+            "median_pb": reference_metrics.get("pb"),
+            "avg_roe": reference_metrics.get("roe"),
+            "median_roe": reference_metrics.get("roe"),
+            "stock_count": 0,
+            "pe_std": None,
+            "note": reference_metrics.get("note", "行业参考估值，非实时成分股统计"),
+        }
+        result["industry_peers_top"] = []
     else:
         result["industry_metrics"] = {}
         result["industry_peers_top"] = []
@@ -696,17 +796,36 @@ def process_industry_data(stock_data: dict, industry_peers: list[dict],
             stock_data.get("pe"),
             stock_data.get("roe"),
             industry_peers,
+            stock_pb=stock_data.get("pb"),
         )
         result["rank_in_industry"] = {
             "pe_rank": rank.pe_rank,
             "pe_percentile": rank.pe_percentile,
+            "pb_rank": rank.pb_rank,
+            "pb_percentile": rank.pb_percentile,
             "roe_rank": rank.roe_rank,
             "roe_percentile": rank.roe_percentile,
             "valuation_label": rank.valuation_label,
             "vs_median_pe": rank.vs_median_pe,
+            "vs_median_pb": rank.vs_median_pb,
         }
     else:
-        result["rank_in_industry"] = {"note": "成分股数据不可用，无法计算排名"}
+        note = "成分股数据不可用，无法计算排名"
+        if reference_metrics:
+            note = "仅有行业参考估值，无法计算成分股排名"
+        result["rank_in_industry"] = {
+            "pe_rank": "参考均值(无成分股排名)" if reference_metrics else "N/A",
+            "pe_percentile": None,
+            "pb_rank": "参考均值(无成分股排名)" if reference_metrics else "N/A",
+            "pb_percentile": None,
+            "roe_rank": "参考均值(无成分股排名)" if reference_metrics else "N/A",
+            "roe_percentile": None,
+            "valuation_label": "基于行业参考均值，缺少实时成分股排名" if reference_metrics else "N/A",
+            "vs_median_pe": "N/A",
+            "vs_median_pb": "N/A",
+            "reference_only": bool(reference_metrics),
+            "note": note,
+        }
 
     # 3. 性价比评分
     if industry_peers:
@@ -720,6 +839,22 @@ def process_industry_data(stock_data: dict, industry_peers: list[dict],
             "interpretation": vs.interpretation,
             "pe_ratio": vs.pe_ratio,
             "roe_ratio": vs.roe_ratio,
+        }
+    elif reference_metrics:
+        vs = calculate_value_score(
+            stock_data,
+            result["industry_metrics"],
+        )
+        result["value_score"] = {
+            "value_ratio": vs.value_ratio,
+            "score": vs.score,
+            "interpretation": (
+                f"{vs.interpretation}（基于行业参考估值，非实时成分股）"
+                if vs.interpretation else "基于行业参考估值，非实时成分股"
+            ),
+            "pe_ratio": vs.pe_ratio,
+            "roe_ratio": vs.roe_ratio,
+            "reference_only": True,
         }
     else:
         result["value_score"] = {"note": "成分股数据不可用"}
@@ -740,22 +875,42 @@ def process_industry_data(stock_data: dict, industry_peers: list[dict],
         result["industry_trend"] = {"note": "趋势数据不可用"}
 
     # 5. 数据质量评估
-    has_constituents = bool(industry_peers) and len(industry_peers) > 5
+    has_constituents = (
+        bool(industry_peers)
+        and len(industry_peers) >= 3
+        and not has_reference_peers
+    )
     has_trend = industry_trend is not None and industry_trend.get("change_20d") is not None
+    has_reference_metrics = bool(reference_metrics)
+    has_value_score = result.get("value_score", {}).get("score") not in (
+        None, "", "insufficient_data",
+    )
 
     quality_score = 0.0
     if has_constituents:
         quality_score += 0.5
+    elif has_reference_peers:
+        quality_score += 0.30
+    elif has_reference_metrics:
+        quality_score += 0.35
     if has_trend:
         quality_score += 0.3
-    if result.get("rank_in_industry", {}).get("pe_rank", "N/A") != "N/A":
+    if result.get("rank_in_industry", {}).get("pe_rank", "N/A") != "N/A" and not has_reference_peers:
         quality_score += 0.2
+    elif has_reference_peers and has_value_score:
+        quality_score += 0.10
+    elif has_value_score:
+        quality_score += 0.15
 
     ceiling = 0.85 if quality_score >= 0.8 else 0.65 if quality_score >= 0.5 else 0.45 if quality_score >= 0.3 else 0.25
 
     notes_parts = []
     if has_constituents:
         notes_parts.append(f"成分股数据可用({len(industry_peers)}家)")
+    elif has_reference_peers:
+        notes_parts.append(f"参考成分股快照可用({len(industry_peers)}家，非实时)")
+    elif has_reference_metrics:
+        notes_parts.append("行业参考估值可用")
     else:
         notes_parts.append("成分股数据不可用")
     if has_trend:
@@ -766,7 +921,10 @@ def process_industry_data(stock_data: dict, industry_peers: list[dict],
     result["data_quality"] = {
         "overall": round(quality_score, 2),
         "has_constituents": has_constituents,
+        "has_reference_peers": has_reference_peers,
         "has_trend": has_trend,
+        "has_reference_metrics": has_reference_metrics,
+        "ranking_reliability": "reference_snapshot" if has_reference_peers else "realtime_or_mixed",
         "confidence_ceiling": ceiling,
         "notes": ", ".join(notes_parts),
     }

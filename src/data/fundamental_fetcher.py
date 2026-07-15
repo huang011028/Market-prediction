@@ -15,11 +15,17 @@ from typing import Optional
 import logging
 import json
 
+from src.data import us_fallbacks
 from src.data.fundamental_preprocessor import (
     extract_financial_trend,
     generate_quality_scorecard,
     assess_data_quality,
     detect_value_trap,
+)
+from src.data.industry_preprocessor import (
+    HK_PEER_REFERENCE,
+    KNOWN_HK_INDUSTRIES,
+    IndustryReferenceCache,
 )
 from src.data.valuation_history import (
     calculate_valuation_percentile,
@@ -203,6 +209,14 @@ class FundamentalData:
             "data_gaps": quality_report.data_gaps,
             "confidence_ceiling": quality_report.confidence_ceiling,
         }
+        if quality_report.completeness < 0.40:
+            base["quality_scorecard"]["raw_total"] = base["quality_scorecard"]["total"]
+            base["quality_scorecard"]["total"] = None
+            base["quality_scorecard"]["rating"] = "unknown"
+            base["quality_scorecard"]["not_scorable"] = True
+            base["quality_scorecard"]["coverage_warning"] = (
+                "关键字段覆盖不足，评分卡仅作字段覆盖提示，不可解释为公司质量极低"
+            )
 
         # --- 5. 价值陷阱检测 ---
         base["value_trap_analysis"] = detect_value_trap(financials, pe_percentile)
@@ -226,6 +240,9 @@ class FundamentalData:
 
 class FundamentalFetcher:
     """基本面数据获取器"""
+
+    YFINANCE_RATE_LIMIT_COOLDOWN_SECONDS = 600
+    _yfinance_rate_limited_until: float = 0.0
 
     async def fetch(self, symbol: str, market: str) -> FundamentalData:
         """获取基本面数据
@@ -251,6 +268,9 @@ class FundamentalFetcher:
             result.data_source = "partial" if result.data_source != "none" else "none"
             result.missing_fields.append(str(e))
 
+        if market == "US":
+            await self._fetch_us_fallback(result, symbol)
+
         return result
 
     async def fetch_enhanced(self, symbol: str, market: str) -> dict:
@@ -272,6 +292,7 @@ class FundamentalFetcher:
         # 港股：补充财务数据
         if market == "HK":
             await self._fetch_hk_financials_supplement(fundamental_data, symbol)
+            self._apply_hk_reference_fallback(fundamental_data, symbol)
 
         # 获取PE历史序列（仅A股）
         pe_history = None
@@ -330,6 +351,46 @@ class FundamentalFetcher:
         except Exception as e:
             logger.debug(f"港股财务补充失败: {e}")
 
+    def _apply_hk_reference_fallback(self, result: FundamentalData, symbol: str) -> None:
+        """港股实时/财务源失败时，用低置信参考快照补齐最低可分析字段。"""
+        hk_symbol = self._normalize_hk_symbol(symbol)
+        ref = HK_PEER_REFERENCE.get(hk_symbol)
+        industry_info = KNOWN_HK_INDUSTRIES.get(hk_symbol, {})
+        industry_name = industry_info.get("name", "")
+
+        filled_any = False
+
+        def fill(attr: str, value) -> None:
+            nonlocal filled_any
+            if getattr(result, attr) in (None, "") and value not in (None, ""):
+                setattr(result, attr, value)
+                filled_any = True
+
+        if ref:
+            fill("company_name", ref.get("name"))
+            fill("pe", ref.get("pe"))
+            fill("pb", ref.get("pb"))
+            fill("roe", ref.get("roe"))
+        fill("industry", industry_name)
+
+        if industry_name:
+            industry_ref = IndustryReferenceCache().get(industry_name) or {}
+            fill("industry_pe", industry_ref.get("pe"))
+            fill("industry_pb", industry_ref.get("pb"))
+
+        if filled_any:
+            if result.data_source in ("", "none"):
+                result.data_source = "hk_reference"
+            elif "hk_reference" not in result.data_source:
+                result.data_source = f"{result.data_source}+hk_reference"
+
+    @staticmethod
+    def _normalize_hk_symbol(symbol: str) -> str:
+        clean = str(symbol or "").strip().upper().replace(".HK", "")
+        if not clean:
+            return clean
+        return clean.zfill(4 if len(clean) <= 4 else 5)
+
     # ================================================================
     # A股数据
     # ================================================================
@@ -338,7 +399,8 @@ class FundamentalFetcher:
         """从 akshare + 新浪 获取 A 股基本面数据"""
         import akshare as ak
 
-        fetched_any = False
+        sources: list[str] = []
+        latest_price: Optional[float] = None
 
         # --- 公司名称 + 实时估值（新浪/腾讯 API，亲测可用） ---
         try:
@@ -370,12 +432,14 @@ class FundamentalFetcher:
             text2 = resp2.text
             if "~" in text2:
                 fields2 = text2.split("~")
-                if len(fields2) >= 40:
-                    if result.pe is None:
-                        result.pe = self._safe_float(fields2[39])  # PE
-                    if not result.company_name and len(fields2) >= 2:
-                        result.company_name = fields2[1]
-                    logger.info(f"腾讯行情: PE={result.pe}")
+                latest_price = self._apply_a_share_tencent_fields(result, fields2)
+                if any(source == "tencent" for source in sources) is False and (
+                    result.pe is not None or result.pb is not None or result.market_cap is not None
+                ):
+                    sources.append("tencent")
+                logger.info(
+                    f"腾讯行情: PE={result.pe}, PB={result.pb}, 市值={result.market_cap}亿"
+                )
         except Exception as e:
             logger.debug(f"实时行情获取失败: {e}")
 
@@ -395,12 +459,10 @@ class FundamentalFetcher:
 
                 # PB = 股价 / 每股净资产
                 bvps = self._parse_financial_value(latest.get("每股净资产"))
-                if bvps and bvps > 0 and result.pe is not None and result.pe > 0:
-                    # 从 PE 反推股价: price = PE * EPS (需要 TTM EPS)
-                    # 这里用每股净资产直接算 PB 更准确
-                    pass
+                if result.pb is None and latest_price and bvps and bvps > 0:
+                    result.pb = round(latest_price / bvps, 2)
 
-                fetched_any = True
+                sources.append("akshare")
                 logger.info(f"财务数据: 报告期={latest.get('报告期')}, "
                            f"营收={result.latest_revenue}亿, 利润={result.latest_net_profit}亿, "
                            f"ROE={result.roe}%, EPS={result.eps}")
@@ -408,21 +470,91 @@ class FundamentalFetcher:
             logger.debug(f"财务指标获取失败: {e}")
             result.missing_fields.append("财务指标")
 
-        if fetched_any:
-            result.data_source = "akshare"
+        if sources:
+            result.data_source = "+".join(dict.fromkeys(sources))
         else:
             result.data_source = "none"
             result.missing_fields.append("akshare 所有接口均失败")
 
-        if fetched_any:
-            result.data_source = "akshare"
-        else:
-            result.data_source = "none"
-            result.missing_fields.append("akshare 所有接口均失败")
+    def _apply_a_share_tencent_fields(
+        self,
+        result: FundamentalData,
+        fields: list[str],
+    ) -> Optional[float]:
+        """从腾讯 A 股行情字段补齐估值；返回最新价用于 PB 兜底计算。"""
+        latest_price = self._safe_float(fields[3]) if len(fields) > 3 else None
+        if len(fields) > 1 and not result.company_name:
+            result.company_name = fields[1]
+        if len(fields) > 39 and result.pe is None:
+            result.pe = self._safe_float(fields[39])
+        if len(fields) > 44 and result.market_cap is None:
+            result.market_cap = self._safe_float(fields[44])
+        if len(fields) > 46 and result.pb is None:
+            result.pb = self._safe_float(fields[46])
+        return latest_price
 
     # ================================================================
     # yfinance 数据（港股/美股）
     # ================================================================
+
+    async def _fetch_us_fallback(self, result: FundamentalData, symbol: str):
+        """用 SEC companyfacts + 美股参考快照补齐 yfinance 缺口。"""
+        key_fields = (
+            "company_name",
+            "industry",
+            "latest_revenue",
+            "latest_net_profit",
+            "roe",
+            "pe",
+            "pb",
+        )
+        if result.data_source == "yfinance" and all(getattr(result, field) for field in key_fields):
+            return
+
+        try:
+            fallback = us_fallbacks.fetch_us_fundamental_fallback(symbol)
+        except Exception as e:
+            logger.debug(f"美股基本面备用源失败 ({symbol}): {e}")
+            return
+
+        if not fallback:
+            return
+
+        filled_any = False
+
+        def fill(attr: str, key: str):
+            nonlocal filled_any
+            value = fallback.get(key)
+            current = getattr(result, attr)
+            if current in (None, "") and value not in (None, ""):
+                setattr(result, attr, value)
+                filled_any = True
+
+        fill("company_name", "company_name")
+        fill("industry", "industry")
+        fill("latest_revenue", "revenue")
+        fill("latest_net_profit", "net_profit")
+        fill("revenue_yoy", "revenue_yoy")
+        fill("profit_yoy", "profit_yoy")
+        fill("roe", "roe")
+        fill("eps", "eps")
+        fill("pe", "pe")
+        fill("pb", "pb")
+        fill("market_cap", "market_cap")
+        fill("industry_pe", "industry_pe")
+        fill("industry_pb", "industry_pb")
+
+        if filled_any:
+            source = fallback.get("data_source", "us_reference")
+            if result.data_source and result.data_source not in ("none", "partial"):
+                result.data_source = f"{result.data_source}+{source}"
+            else:
+                result.data_source = source
+
+        for field in fallback.get("missing_fields", []):
+            marker = f"us_fallback_missing:{field}"
+            if marker not in result.missing_fields:
+                result.missing_fields.append(marker)
 
     async def _fetch_hk_tencent(self, result: FundamentalData, symbol: str):
         """从腾讯实时行情 + Sina 获取港股基本面数据"""
@@ -478,6 +610,12 @@ class FundamentalFetcher:
         import time
         import yfinance as yf
 
+        if time.monotonic() < self.__class__._yfinance_rate_limited_until:
+            result.data_source = "none"
+            result.missing_fields.append("yfinance: rate limit cooldown")
+            logger.debug("yfinance 处于限流冷却期，直接走备用源")
+            return
+
         # 港股需要加 .HK 后缀
         if result.market == "HK" and not ".HK" in symbol.upper():
             symbol = symbol + ".HK"
@@ -526,9 +664,13 @@ class FundamentalFetcher:
             except Exception as e:
                 err = str(e)
                 if "Rate limited" in err or "Too Many Requests" in err:
-                    wait = 5 * (2 ** attempt)
-                    logger.debug(f"yfinance 限流，{wait}s 后重试 ({attempt+1}/3)...")
-                    time.sleep(wait)
+                    self.__class__._yfinance_rate_limited_until = (
+                        time.monotonic() + self.YFINANCE_RATE_LIMIT_COOLDOWN_SECONDS
+                    )
+                    result.data_source = "none"
+                    result.missing_fields.append("yfinance: rate limited")
+                    logger.warning("yfinance 基本面限流，进入冷却期并切换备用源")
+                    return
                 elif attempt < 2:
                     time.sleep(2)
                 else:

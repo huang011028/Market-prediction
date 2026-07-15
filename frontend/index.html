@@ -4,19 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Market Prediction — AI Agent 市场分析系统</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css?v=20260715-v35">
 </head>
 <body>
     <!-- 顶部导航 -->
     <header class="header">
         <div class="header-inner">
             <div class="logo">
-                <span class="logo-icon">📊</span>
+                <span class="logo-icon">M</span>
                 <span class="logo-text">Market Prediction</span>
             </div>
             <nav class="nav">
                 <a href="#" class="nav-link active" data-tab="analyze">分析</a>
                 <a href="#" class="nav-link" data-tab="history">历史</a>
+                <a href="#" class="nav-link" data-tab="improvement">调优</a>
+                <a href="#" class="nav-link" data-tab="quant">Quant</a>
+                <a href="#" class="nav-link" data-tab="skills">Skill</a>
+                <a href="#" class="nav-link" data-tab="models">模型</a>
                 <a href="#" class="nav-link" data-tab="agents">Agent</a>
             </nav>
             <div class="status-indicator" id="statusIndicator">
@@ -34,11 +41,17 @@
             <!-- 输入区 -->
             <section class="input-section">
                 <div class="input-card">
-                    <h2 class="input-title">输入股票代码或公司名称</h2>
+                    <div class="input-eyebrow">LIVE MARKET PULSE</div>
+                    <h2 class="input-title">多 Agent 市场研判</h2>
                     <div class="input-row">
                         <input type="text" id="targetInput" class="target-input"
                                placeholder="输入代码: 000001 / 0700 / AAPL  或  名称: 腾讯"
                                autocomplete="off">
+                        <select id="marketSelect" class="market-select">
+                            <option value="A">A股</option>
+                            <option value="HK">港股</option>
+                            <option value="US">美股</option>
+                        </select>
                         <select id="timeframeSelect" class="timeframe-select">
                             <option value="短期(1周)">短期 (1周)</option>
                             <option value="中期(1月)">中期 (1月)</option>
@@ -60,11 +73,11 @@
                     </div>
                     <div class="quick-inputs">
                         <span class="quick-label">快捷输入:</span>
-                        <button class="quick-btn" data-target="000001">平安银行</button>
-                        <button class="quick-btn" data-target="0700">腾讯控股</button>
-                        <button class="quick-btn" data-target="600519">贵州茅台</button>
-                        <button class="quick-btn" data-target="000333">美的集团</button>
-                        <button class="quick-btn" data-target="AAPL">Apple</button>
+                        <button class="quick-btn" data-target="000001" data-market="A">平安银行</button>
+                        <button class="quick-btn" data-target="0700" data-market="HK">腾讯控股</button>
+                        <button class="quick-btn" data-target="600519" data-market="A">贵州茅台</button>
+                        <button class="quick-btn" data-target="000333" data-market="A">美的集团</button>
+                        <button class="quick-btn" data-target="AAPL" data-market="US">Apple</button>
                     </div>
                     <div class="disclaimer-banner">
                         本项目仅供学习、研究和工程验证使用，不构成任何投资建议。模型输出和数据源都可能出错，请勿直接据此做真实交易决策。
@@ -75,13 +88,29 @@
             <!-- 加载状态 -->
             <section class="loading-section" id="loadingSection" style="display:none">
                 <div class="loading-card">
-                    <div class="loading-spinner"></div>
-                    <p class="loading-text">AI Agent 团队正在分析中...</p>
+                    <div class="loading-status-row">
+                        <div class="loading-pulse" aria-hidden="true"></div>
+                        <div>
+                            <h3 class="loading-title">AI Agent 团队正在分析中</h3>
+                            <p class="loading-text" id="loadingMessage">正在创建分析任务...</p>
+                        </div>
+                    </div>
                     <div class="loading-progress">
-                        <div class="progress-bar">
+                        <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                             <div class="progress-fill" id="progressFill"></div>
                         </div>
-                        <p class="progress-text" id="progressText">正在获取数据...</p>
+                        <div class="progress-meta">
+                            <span class="progress-text" id="progressText">0% · 等待启动</span>
+                            <span class="progress-value" id="progressValue">0%</span>
+                        </div>
+                        <div class="progress-stages" id="progressStages">
+                            <span data-stage="5">解析标的</span>
+                            <span data-stage="12">构建团队</span>
+                            <span data-stage="20">Agent 分析</span>
+                            <span data-stage="65">权重状态</span>
+                            <span data-stage="75">综合研判</span>
+                            <span data-stage="95">整理结果</span>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -92,10 +121,11 @@
                 <!-- 综合预测卡片 -->
                 <div class="final-report-card" id="finalReportCard">
                     <div class="report-header">
-                        <h3 class="report-title">🎯 综合预测</h3>
+                        <h3 class="report-title">综合预测</h3>
                         <span class="report-target" id="reportTarget"></span>
                     </div>
                     <div class="report-body">
+                        <div class="decision-bento" id="decisionBento"></div>
                         <div class="report-main">
                             <div class="direction-badge" id="directionBadge">
                                 <span class="direction-icon"></span>
@@ -110,6 +140,7 @@
                                 <span class="confidence-value" id="confidenceValue"></span>
                             </div>
                         </div>
+                        <div class="prediction-target-strip" id="predictionTargetStrip"></div>
                         <div class="report-summary" id="reportSummary"></div>
                     </div>
                     <div class="report-footer">
@@ -123,7 +154,7 @@
 
                 <div class="trend-card" id="priceTrendCard" style="display:none">
                     <div class="trend-header">
-                        <h4 class="card-title">📈 近期走势</h4>
+                        <h4 class="card-title">近期走势</h4>
                         <div class="trend-header-actions">
                             <div class="trend-mode" id="trendMode" style="display:none">
                                 <button type="button" class="trend-mode-btn active" id="trendModeIntraday">分钟</button>
@@ -138,28 +169,28 @@
 
                 <div class="result-meta-grid">
                     <div class="meta-card" id="dataQualityCard" style="display:none">
-                        <h4 class="card-title">🧭 数据源与新鲜度</h4>
+                        <h4 class="card-title">数据源与新鲜度</h4>
                         <div class="data-quality-list" id="dataQualityList"></div>
                     </div>
                     <div class="meta-card warning" id="failedAgentsCard" style="display:none">
-                        <h4 class="card-title">⚠️ 失败或降级 Agent</h4>
+                        <h4 class="card-title">Agent 状态提醒</h4>
                         <div class="failure-list" id="failedAgentsList"></div>
                     </div>
                 </div>
 
                 <!-- Agent 结果网格 -->
-                <h3 class="section-title">📊 各维度分析结果</h3>
+                <h3 class="section-title">各维度分析结果</h3>
                 <div class="agent-grid" id="agentGrid"></div>
 
                 <!-- 分歧点 -->
                 <div class="disagreements-card" id="disagreementsCard" style="display:none">
-                    <h4 class="card-title">🔀 Agent 间分歧点</h4>
+                    <h4 class="card-title">Agent 间分歧点</h4>
                     <ul id="disagreementsList"></ul>
                 </div>
 
                 <!-- 风险提示 -->
                 <div class="risks-card" id="risksCard" style="display:none">
-                    <h4 class="card-title">⚠️ 关键风险提示</h4>
+                    <h4 class="card-title">关键风险提示</h4>
                     <ul id="risksList"></ul>
                 </div>
             </section>
@@ -169,10 +200,489 @@
         <div class="tab-content" id="tab-history">
             <section class="history-section">
                 <div class="history-header">
-                    <h2>📋 历史预测记录</h2>
+                    <h2>历史预测记录</h2>
                     <input type="text" id="historySearch" class="history-search" placeholder="搜索标的代码/名称...">
                 </div>
                 <div class="history-list" id="historyList"></div>
+            </section>
+        </div>
+
+        <!-- ========== 调优 Tab ========== -->
+        <div class="tab-content" id="tab-improvement">
+            <section class="improvement-section">
+                <div class="improvement-header">
+                    <div>
+                        <h2>Agent 改进工程师</h2>
+                        <p>用真实历史样本评估预测链路，并受控改进 prompt 与声明式 skill。</p>
+                    </div>
+                    <button id="refreshImprovementBtn" class="secondary-btn">刷新状态</button>
+                </div>
+
+                <div class="improvement-grid">
+                    <div class="improvement-panel">
+                        <h3>权限边界</h3>
+                        <div class="permission-grid" id="permissionGrid"></div>
+                    </div>
+                    <div class="improvement-panel">
+                        <h3>被动调优设置</h3>
+                        <p class="panel-subtitle">用于已验证历史预测结果的人工选择与改进工程师流程，不影响下方完整 LLM 闭环。</p>
+                        <div class="settings-grid">
+                            <label>
+                                <span>评估样本阈值</span>
+                                <input type="number" id="improvementEvalMinSamples" min="1" value="5">
+                            </label>
+                            <label>
+                                <span>自动修改阈值</span>
+                                <input type="number" id="improvementMinSamples" min="1" value="20">
+                            </label>
+                            <label>
+                                <span>独立案例阈值</span>
+                                <input type="number" id="improvementMinUniqueCases" min="1" value="5">
+                            </label>
+                            <label>
+                                <span>读取上限</span>
+                                <input type="number" id="improvementLimit" min="1" max="10000" value="2000">
+                            </label>
+                        </div>
+                        <div class="toggle-row">
+                            <label><input type="checkbox" id="improvementDryRun" checked> 仅演练</label>
+                            <label><input type="checkbox" id="improvementApplyPrompt" checked> 自动写 prompt</label>
+                            <label><input type="checkbox" id="improvementApplySkill" checked> 自动写 skill</label>
+                            <label><input type="checkbox" id="improvementLlmReview"> LLM 复核</label>
+                        </div>
+                        <div class="report-path-row">
+                            <input type="text" id="improvementReportPath" placeholder="可选: 已有 historical_agent_evaluation JSON 路径">
+                        </div>
+                        <div class="improvement-actions">
+                            <button id="runEvaluationBtn" class="secondary-btn">生成历史评估</button>
+                            <button id="runEngineerBtn" class="analyze-btn">运行改进工程师</button>
+                        </div>
+                    </div>
+                    <div class="improvement-panel passive-sample-panel">
+                        <div class="panel-title-row">
+                            <h3>被动历史结果样本池</h3>
+                            <button id="refreshPassiveSamplesBtn" class="secondary-btn compact-btn">刷新样本</button>
+                        </div>
+                        <div class="passive-help" id="passiveParameterHelp"></div>
+                        <div class="settings-grid passive-filter-grid">
+                            <label>
+                                <span>验证状态</span>
+                                <select id="passiveSampleStatus" class="skill-filter">
+                                    <option value="all">全部历史结果</option>
+                                    <option value="verified">已验证，可调优</option>
+                                    <option value="unverified">观察中</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span>标的</span>
+                                <select id="passiveSampleTarget" class="skill-filter">
+                                    <option value="">全部标的</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span>预测周期</span>
+                                <select id="passiveSampleTimeframe" class="skill-filter">
+                                    <option value="">全部周期</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span>显示条数</span>
+                                <input type="number" id="passiveSampleLimit" min="1" max="1000" value="200">
+                            </label>
+                        </div>
+                        <div class="passive-sample-summary" id="passiveSampleSummary"></div>
+                        <div class="passive-sample-actions">
+                            <button id="selectEligiblePassiveSamplesBtn" class="secondary-btn">勾选当前可调优样本</button>
+                            <button id="clearPassiveSamplesBtn" class="secondary-btn">清空选择</button>
+                            <span id="passiveSelectedCount">已选 0 条预测</span>
+                        </div>
+                        <div class="passive-sample-list" id="passiveSampleList">
+                            <div class="empty-inline">等待加载历史预测样本...</div>
+                        </div>
+                    </div>
+                    <div class="improvement-panel llm-loop-panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <h3>完整 LLM 调优闭环</h3>
+                                <p class="panel-subtitle">历史样本 → LLM 候选 prompt/skill → replay 对照 → holdout 门禁 → 通过后进入 Skill Registry。</p>
+                            </div>
+                            <span class="loop-badge">端到端</span>
+                        </div>
+                        <div class="loop-stage-strip" aria-label="LLM 调优闭环流程">
+                            <span>主动样本</span>
+                            <span>LLM 候选</span>
+                            <span>Prompt Replay</span>
+                            <span>Holdout 门禁</span>
+                            <span>Registry</span>
+                        </div>
+                        <h4 class="settings-subtitle">训练样本范围</h4>
+                        <div class="settings-grid loop-settings-grid">
+                            <label>
+                                <span>训练标的</span>
+                                <input type="text" id="selfLabTargets" value="000001,600519,000333,300750,600036,601318,600900,002415,601899,300760">
+                                <small class="field-help">用于发现问题和生成候选规则的 A 股训练样本，逗号分隔；默认覆盖更多标的。</small>
+                            </label>
+                            <label>
+                                <span>训练开始日期</span>
+                                <input type="date" id="selfLabStartDate" value="2024-01-01">
+                                <small class="field-help">训练集起点；越早样本越多，但市场环境差异也会变大。</small>
+                            </label>
+                            <label>
+                                <span>训练结束日期</span>
+                                <input type="date" id="selfLabEndDate" value="2025-06-30">
+                                <small class="field-help">训练集终点；会从这段区间生成可回放的历史 K 线样本。</small>
+                            </label>
+                            <label>
+                                <span>预测周期</span>
+                                <select id="technicalLoopTimeframe" class="skill-filter">
+                                    <option value="短期(1周)">短期 (1周)</option>
+                                    <option value="中期(1月)">中期 (1月)</option>
+                                    <option value="长期(1季)">长期 (1季)</option>
+                                </select>
+                                <small class="field-help">决定历史样本的验证窗口和收益目标口径。</small>
+                            </label>
+                            <label>
+                                <span>抽样间隔</span>
+                                <input type="number" id="selfLabIntervalDays" min="1" max="90" value="14">
+                                <small class="field-help">每隔多少天抽一个历史预测点；越小样本越密、运行越慢。</small>
+                            </label>
+                        </div>
+                        <h4 class="settings-subtitle">独立验证与 replay 门禁</h4>
+                        <div class="settings-grid loop-settings-grid">
+                            <label>
+                                <span>Holdout 标的</span>
+                                <input type="text" id="candidateHoldoutTargets" value="600276,601012,000858,002594,600030,601888">
+                                <small class="field-help">独立验证集 A 股标的；不参与候选生成，默认与训练集不重叠且规模更小。</small>
+                            </label>
+                            <label>
+                                <span>Holdout 开始日期</span>
+                                <input type="date" id="candidateHoldoutStartDate" value="2025-07-01">
+                                <small class="field-help">独立验证区间起点，建议和训练区间错开。</small>
+                            </label>
+                            <label>
+                                <span>Holdout 结束日期</span>
+                                <input type="date" id="candidateHoldoutEndDate" value="2025-12-31">
+                                <small class="field-help">独立验证区间终点，用于防止候选规则只记住训练集。</small>
+                            </label>
+                            <label>
+                                <span>Holdout 周期</span>
+                                <select id="candidateHoldoutTimeframe" class="skill-filter">
+                                    <option value="短期(1周)">短期 (1周)</option>
+                                    <option value="中期(1月)">中期 (1月)</option>
+                                    <option value="长期(1季)">长期 (1季)</option>
+                                </select>
+                                <small class="field-help">验证候选改法时使用的预测周期。</small>
+                            </label>
+                            <label>
+                                <span>Holdout 抽样间隔</span>
+                                <input type="number" id="candidateHoldoutIntervalDays" min="1" max="90" value="14">
+                                <small class="field-help">验证集每隔多少天取一个样本；越小验证更充分、耗时更长。</small>
+                            </label>
+                            <label>
+                                <span>Holdout 样本阈值</span>
+                                <input type="number" id="candidateMinHoldoutSamples" min="1" value="20">
+                                <small class="field-help">验证集中至少要有多少条有效样本；不足则不允许自动晋升。</small>
+                            </label>
+                            <label>
+                                <span>Replay 上限</span>
+                                <input type="number" id="promptReplayMaxSamples" min="1" max="200" value="60">
+                                <small class="field-help">最多拿多少条样本跑 baseline 与 candidate prompt 对照；越大越贵也越稳。</small>
+                            </label>
+                            <label>
+                                <span>Replay 阈值</span>
+                                <input type="number" id="promptReplayMinSamples" min="1" value="30">
+                                <small class="field-help">至少完成多少条 replay 才接受结论；低于该值只保留草案。</small>
+                            </label>
+                            <label>
+                                <span>候选 Batch 数</span>
+                                <input type="number" id="candidateBatchCount" min="1" max="10" value="5">
+                                <small class="field-help">把训练错例按 batch 分组，让 LLM 从多个错例子集分别生成候选，再统一用 Holdout 验证。</small>
+                            </label>
+                        </div>
+                        <div class="loop-sample-estimates" aria-live="polite">
+                            <div class="sample-estimate-card" id="trainingSampleEstimateCard">
+                                <span>训练样本预计</span>
+                                <strong id="trainingSampleEstimateValue">--</strong>
+                                <small id="trainingSampleEstimateMeta">根据训练标的、日期和抽样间隔自动估算。</small>
+                            </div>
+                            <div class="sample-estimate-card" id="holdoutSampleEstimateCard">
+                                <span>Holdout 样本预计</span>
+                                <strong id="holdoutSampleEstimateValue">--</strong>
+                                <small id="holdoutSampleEstimateMeta">根据验证标的、日期和抽样间隔自动估算。</small>
+                            </div>
+                            <div class="sample-estimate-card" id="replaySampleEstimateCard">
+                                <span>Replay 预计</span>
+                                <strong id="replaySampleEstimateValue">--</strong>
+                                <small id="replaySampleEstimateMeta">受 Replay 上限和 Replay 阈值共同约束。</small>
+                            </div>
+                        </div>
+                        <div class="toggle-row loop-toggle-row">
+                            <label><input type="checkbox" id="candidateApplyIfPassed"> 通过后晋升</label>
+                            <span class="field-help inline-help">关闭时只生成候选和验证报告；打开后通过门禁才写入 prompt guardrail / Skill Registry。</span>
+                        </div>
+                        <div class="improvement-actions">
+                            <button id="runTechnicalPromptLoopBtn" class="analyze-btn">运行完整 LLM 调优闭环</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="improvement-output" id="improvementOutput">
+                    <div class="empty-state">暂无调优报告。可以运行完整 LLM 调优闭环，或在被动历史结果样本池中选择样本后运行改进工程师。</div>
+                </div>
+            </section>
+        </div>
+
+        <!-- ========== Quant Validation Tab ========== -->
+        <div class="tab-content" id="tab-quant">
+            <section class="improvement-section quant-section">
+                <div class="improvement-header">
+                    <div>
+                        <h2>Quant 验证中心</h2>
+                        <p>Target V3.1 · PIT 特征 · Walk-forward · 学习型 Aggregator · 成本后组合回测</p>
+                    </div>
+                    <button id="refreshQuantBtn" class="secondary-btn">刷新状态</button>
+                </div>
+
+                <div class="improvement-summary" id="quantStatusSummary">
+                    <div class="metric-card"><span>PIT 样本</span><strong>--</strong></div>
+                    <div class="metric-card"><span>已标注</span><strong>--</strong></div>
+                    <div class="metric-card"><span>独立日期</span><strong>--</strong></div>
+                    <div class="metric-card"><span>残差标签</span><strong>--</strong></div>
+                    <div class="metric-card"><span>Agent 快照</span><strong>--</strong></div>
+                    <div class="metric-card"><span>启用模型</span><strong>--</strong></div>
+                </div>
+
+                <div class="quant-workspace">
+                    <div class="improvement-panel quant-panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <h3>1. PIT 历史特征</h3>
+                                <p class="panel-subtitle">技术 K 线可立即回放；其他 Agent 只接受真实时点快照。</p>
+                            </div>
+                            <span class="loop-badge">Research Data V2.2</span>
+                        </div>
+                        <div class="settings-grid quant-settings-grid">
+                            <label><span>训练标的</span><input id="quantTargets" type="text" value="000001,600519,000333,300750,600036"></label>
+                            <label class="toggle-label" title="按历史上市/退市有效区间选择当时可投资的 A 股"><span>使用 PIT 股票池</span><input id="quantUseUniverse" type="checkbox"></label>
+                            <label title="每个历史日期最多选择多少只股票，固定抽样可形成跨日期联合股票池"><span>股票池上限</span><input id="quantUniverseLimit" type="number" min="0" max="10000" value="200"></label>
+                            <label class="toggle-label" title="按交易所和板块分层后再做固定种子抽样，避免单一板块主导"><span>分层抽样</span><input id="quantUniverseStratify" type="checkbox" checked></label>
+                            <label class="toggle-label" title="只读取公告日不晚于 as_of 的财报、公告和行业有效区间"><span>PIT 丰富特征</span><input id="quantUsePitEnrichment" type="checkbox" checked></label>
+                            <label title="上市不足该天数的股票不进入训练"><span>最短上市天数</span><input id="quantMinListingDays" type="number" min="0" max="3650" value="120"></label>
+                            <label><span>开始日期</span><input id="quantStartDate" type="date" value="2021-01-04"></label>
+                            <label><span>结束日期</span><input id="quantEndDate" type="date" value="2025-12-01"></label>
+                            <label title="相邻样本至少间隔一个目标周期，可减少标签重叠"><span>抽样间隔</span><input id="quantIntervalDays" type="number" min="1" max="90" value="7"></label>
+                            <label title="限制本轮网络请求和样本规模；正式 Research Data V2 建议至少 30000"><span>样本上限</span><input id="quantMaxSamples" type="number" min="1" max="200000" value="60000"></label>
+                            <label><span>预测周期</span><select id="quantTimeframe" class="skill-filter"><option value="短期(1周)">5个交易日</option><option value="中期(1月)">20个交易日</option><option value="长期(1季)">60个交易日</option></select></label>
+                        </div>
+                        <div class="improvement-actions">
+                            <button id="refreshQuantEnrichmentBtn" class="secondary-btn" title="联网采集公告日财报、巨潮公告和行业变更有效区间">刷新 PIT 丰富特征</button>
+                            <button id="buildQuantDatasetBtn" class="analyze-btn">构建 PIT 特征</button>
+                        </div>
+                    </div>
+
+                    <div class="improvement-panel quant-panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <h3>2. Walk-forward 基线</h3>
+                                <p class="panel-subtitle">基础模型、validation-only 概率校准与行业限权组合在相同测试折上验证。</p>
+                            </div>
+                            <span class="loop-badge">Shadow</span>
+                        </div>
+                        <div class="settings-grid quant-settings-grid">
+                            <label><span>市场</span><select id="quantMarket" class="skill-filter"><option value="A">A股</option><option value="HK">港股</option><option value="US">美股</option></select></label>
+                            <label><span>周期</span><select id="quantHorizon" class="skill-filter"><option value="5d">5d</option><option value="20d">20d</option><option value="60d">60d</option></select></label>
+                            <label title="训练集与验证/测试之间隔离的自然日数"><span>Purge</span><input id="quantPurgeDays" type="number" min="1" max="120" value="7"></label>
+                            <label title="最终保留且默认不读取结果的时间区间"><span>Lockbox</span><input id="quantLockboxDays" type="number" min="30" max="730" value="180"></label>
+                            <label title="低于此数量不启动模型训练"><span>训练阈值</span><input id="quantMinTrain" type="number" min="20" value="3000"></label>
+                            <label title="每折滚动训练窗口的自然日长度"><span>训练窗口</span><input id="quantTrainDays" type="number" min="60" max="3650" value="730"></label>
+                            <label title="仅用于模型选择，不与测试区间重叠"><span>验证窗口</span><input id="quantValidationDays" type="number" min="14" max="730" value="120"></label>
+                            <label title="每折真正计算样本外指标的区间"><span>测试窗口</span><input id="quantTestDays" type="number" min="14" max="730" value="120"></label>
+                            <label title="训练集至少覆盖多少个不同日期"><span>训练日期阈值</span><input id="quantMinTrainDates" type="number" min="5" value="80"></label>
+                            <label class="toggle-label" title="仅在模型冻结后做一次最终评估"><span>解锁 Lockbox</span><input id="quantUnlockLockbox" type="checkbox"></label>
+                            <label class="toggle-label" title="在完全相同的 Walk-forward 折上比较技术、基本面、公告和行业特征的独立增量"><span>特征族消融</span><input id="quantFeatureAblation" type="checkbox" checked></label>
+                            <label class="toggle-label" title="校准器只读取 validation，绝不读取 test；用于降低过度自信和概率偏差"><span>概率校准</span><input id="quantProbabilityCalibration" type="checkbox" checked></label>
+                            <label class="toggle-label" title="将技术模型与行业增强模型做非负组合，行业增量权重最多 35%"><span>行业限权组合</span><input id="quantIndustryStacking" type="checkbox" checked></label>
+                        </div>
+                        <div class="improvement-actions"><button id="runQuantWalkForwardBtn" class="analyze-btn">运行 Walk-forward</button></div>
+                    </div>
+
+                    <div class="improvement-panel quant-panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <h3>3. 学习型 Aggregator</h3>
+                                <p class="panel-subtitle">只使用 live/out-of-fold 预测学习非负权重；样本不足时保持静态权重。</p>
+                            </div>
+                        </div>
+                        <div class="settings-grid quant-settings-grid">
+                            <label title="至少需要多少条已验证的 Agent 概率记录"><span>最小样本</span><input id="quantAggregatorMinSamples" type="number" min="30" value="200"></label>
+                            <label title="避免大量同日股票被误当成独立时间样本"><span>独立日期</span><input id="quantAggregatorMinDates" type="number" min="10" value="60"></label>
+                            <label title="候选 Brier 至少优于静态权重多少"><span>Brier 提升</span><input id="quantAggregatorBrier" type="number" min="0" max="1" step="0.001" value="0.005"></label>
+                            <label title="至少通过多少个带 purge 的时间折，少于三折禁止启用"><span>最少折数</span><input id="quantAggregatorMinFolds" type="number" min="3" max="10" value="3"></label>
+                            <label class="toggle-label" title="只有门禁通过后才会写成 enabled；默认仍只生成影子模型"><span>通过后启用</span><input id="quantAggregatorActivate" type="checkbox"></label>
+                        </div>
+                        <div class="improvement-actions"><button id="trainQuantAggregatorBtn" class="analyze-btn">训练 Aggregator</button></div>
+                    </div>
+
+                    <div class="improvement-panel quant-panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <h3>4. 成本后组合回测</h3>
+                                <p class="panel-subtitle">读取 Walk-forward OOF 预测，模拟市场成本、换手、仓位和做空限制。</p>
+                            </div>
+                        </div>
+                        <div class="settings-grid quant-settings-grid">
+                            <label class="quant-wide"><span>OOF JSONL 路径</span><textarea id="quantOofPaths" rows="3" placeholder="每行一个 output/quant_walk_forward/.../oof/*.jsonl"></textarea></label>
+                            <label><span>模型</span><select id="quantPortfolioModel" class="skill-filter"><option value="ridge">Ridge</option><option value="logistic">Logistic</option><option value="lightgbm">LightGBM</option></select></label>
+                            <label><span>Top K</span><input id="quantTopK" type="number" min="1" max="200" value="10"></label>
+                            <label><span>最大单股仓位</span><input id="quantMaxWeight" type="number" min="0.01" max="1" step="0.01" value="0.20"></label>
+                            <label title="概率边际低于此值时保持现金，不建立仓位"><span>最小边际</span><input id="quantMinEdge" type="number" min="0" max="1" step="0.01" value="0.10"></label>
+                            <label title="美股可选；A股和港股默认禁用"><span>Bottom K</span><input id="quantBottomK" type="number" min="0" max="200" value="0"></label>
+                            <label class="toggle-label"><span>允许做空</span><input id="quantAllowShort" type="checkbox"></label>
+                        </div>
+                        <div class="improvement-actions"><button id="runPortfolioBacktestBtn" class="analyze-btn">运行组合回测</button></div>
+                    </div>
+
+                    <div class="improvement-panel quant-panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <h3>5. 证据维护</h3>
+                                <p class="panel-subtitle">验证已到期预测；可选采集近期预测标的的今日基本面、行业、宏观和新闻快照。</p>
+                            </div>
+                            <span class="loop-badge">Auto</span>
+                        </div>
+                        <div class="settings-grid quant-settings-grid">
+                            <label class="toggle-label" title="采集会请求外部数据源，但 evidence 模式不调用 LLM"><span>同时采集今日快照</span><input id="quantCollectSnapshots" type="checkbox"></label>
+                            <label title="未指定标的时，从最近预测中最多选择多少只"><span>近期标的上限</span><input id="quantRecentTargetLimit" type="number" min="1" max="500" value="30"></label>
+                        </div>
+                        <div class="improvement-actions"><button id="runEvidenceMaintenanceBtn" class="analyze-btn">运行证据维护</button></div>
+                    </div>
+                </div>
+
+                <div class="improvement-output" id="quantOutput">
+                    <div class="empty-state">先刷新状态，查看目前可用于模型验证的 PIT 样本。</div>
+                </div>
+            </section>
+        </div>
+
+        <!-- ========== Skill Registry Tab ========== -->
+        <div class="tab-content" id="tab-skills">
+            <section class="skills-section">
+                <div class="skills-header">
+                    <div>
+                        <h2>Agent Skill Registry</h2>
+                        <p>查看和管理经过历史样本验证后启用的声明式 skill。</p>
+                    </div>
+                    <button id="refreshSkillsBtn" class="secondary-btn">刷新 Skill</button>
+                </div>
+
+                <div class="skill-summary" id="skillSummary">
+                    <div class="metric-card">
+                        <span>全部 Skill</span>
+                        <strong>0</strong>
+                    </div>
+                    <div class="metric-card">
+                        <span>已启用</span>
+                        <strong>0</strong>
+                    </div>
+                    <div class="metric-card">
+                        <span>已禁用</span>
+                        <strong>0</strong>
+                    </div>
+                </div>
+
+                <div class="skills-toolbar">
+                    <select id="skillAgentFilter" class="skill-filter">
+                        <option value="">全部 Agent</option>
+                    </select>
+                    <select id="skillTypeFilter" class="skill-filter">
+                        <option value="">全部类型</option>
+                    </select>
+                    <select id="skillEnabledFilter" class="skill-filter">
+                        <option value="">全部状态</option>
+                        <option value="true">已启用</option>
+                        <option value="false">已禁用</option>
+                    </select>
+                    <input type="search" id="skillSearch" class="skill-search" placeholder="搜索 skill、场景或来源...">
+                </div>
+
+                <div class="path-note" id="skillRegistryPath">Registry: 加载中...</div>
+                <div class="skill-list" id="skillList">
+                    <div class="empty-state">正在加载 Skill Registry...</div>
+                </div>
+            </section>
+        </div>
+
+        <!-- ========== Model Registry Tab ========== -->
+        <div class="tab-content" id="tab-models">
+            <section class="models-section">
+                <div class="models-header">
+                    <div>
+                        <h2>模型配置</h2>
+                        <p>管理 Agent 团队调用的 LLM 模型，新增模型后可直接切换为当前使用模型。</p>
+                    </div>
+                    <button id="refreshModelsBtn" class="secondary-btn">刷新模型</button>
+                </div>
+
+                <div class="model-dashboard">
+                    <div class="model-active-card" id="activeModelCard">
+                        <span>当前模型</span>
+                        <strong>加载中...</strong>
+                        <small>正在读取模型配置</small>
+                    </div>
+
+                    <form class="model-form-panel" id="modelForm">
+                        <div class="panel-title-row">
+                            <h3>添加模型</h3>
+                            <span class="model-secret-note">API Key 只保存在本机 local 配置中</span>
+                        </div>
+                        <div class="model-form-grid">
+                            <label>
+                                <span>显示名称</span>
+                                <input type="text" id="modelNameInput" placeholder="例如 DeepSeek V3 / GPT-4.1" required>
+                            </label>
+                            <label>
+                                <span>供应商</span>
+                                <input type="text" id="modelProviderInput" placeholder="deepseek / openai / qwen" value="custom" required>
+                            </label>
+                            <label class="wide-field">
+                                <span>API Base URL</span>
+                                <input type="url" id="modelBaseUrlInput" placeholder="https://api.deepseek.com/v1" required>
+                            </label>
+                            <label>
+                                <span>模型 ID</span>
+                                <input type="text" id="modelIdInput" placeholder="deepseek-chat / gpt-4.1" required>
+                            </label>
+                            <label>
+                                <span>API Key</span>
+                                <input type="password" id="modelApiKeyInput" placeholder="留空则复用 .env 的 LLM_API_KEY">
+                            </label>
+                            <label>
+                                <span>Temperature</span>
+                                <input type="number" id="modelTemperatureInput" min="0" max="2" step="0.1" value="0.3">
+                            </label>
+                            <label>
+                                <span>Max Tokens</span>
+                                <input type="number" id="modelMaxTokensInput" min="256" max="200000" step="256" value="4096">
+                            </label>
+                        </div>
+                        <div class="model-toggle-row">
+                            <label><input type="checkbox" id="modelVerifySslInput" checked> 验证 SSL</label>
+                            <label><input type="checkbox" id="modelSetActiveInput" checked> 添加后立即使用</label>
+                        </div>
+                        <div class="model-actions">
+                            <button type="submit" class="primary-btn">添加模型</button>
+                            <button type="button" class="secondary-btn" id="resetModelFormBtn">清空</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="model-list-header">
+                    <h3>可用模型</h3>
+                    <span id="modelRegistryPath">Registry: 加载中...</span>
+                </div>
+                <div class="model-card-grid" id="modelCardGrid">
+                    <div class="empty-state">正在加载模型配置...</div>
+                </div>
             </section>
         </div>
 
@@ -198,6 +708,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260715-v35"></script>
 </body>
 </html>

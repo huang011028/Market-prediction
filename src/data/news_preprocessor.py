@@ -176,6 +176,7 @@ STOCK_KEYWORDS: dict[str, list[str]] = {
     "AMZN":  ["Amazon", "亚马逊", "AWS"],
     "META":  ["Meta", "Facebook", "Instagram", "扎克伯格"],
     "NVDA":  ["NVIDIA", "英伟达", "黄仁勋", "GPU"],
+    "AMD":   ["Advanced Micro Devices", "AMD", "超威半导体", "Ryzen", "EPYC"],
     "BABA":  ["Alibaba", "阿里巴巴", "阿里"],
     "JD":    ["JD.com", "京东"],
     "BIDU":  ["Baidu", "百度", "文心一言", "ERNIE"],
@@ -204,7 +205,7 @@ def _resolve_company_name_from_tencent(symbol: str, market: str) -> Optional[str
     import requests
 
     # 构建腾讯 API 的行情代码
-    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "")
+    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "").replace(".SH", "")
     try:
         if market == "A":
             if clean.startswith(("6", "5", "9")):
@@ -245,7 +246,7 @@ def _resolve_company_name_from_sina(symbol: str, market: str) -> Optional[str]:
     """
     import requests
 
-    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "")
+    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "").replace(".SH", "")
     try:
         if market == "A":
             if clean.startswith(("6", "5", "9")):
@@ -295,7 +296,7 @@ def resolve_company_name(symbol: str, market: str = "A") -> Optional[str]:
     Returns:
         公司名称，解析失败返回 None
     """
-    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "")
+    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "").replace(".SH", "")
 
     # 查缓存
     cache_key = f"{market}:{clean}"
@@ -369,7 +370,7 @@ def get_stock_keywords(symbol: str, market: str = "A") -> list[str]:
     Returns:
         关键词列表
     """
-    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "")
+    clean = symbol.strip().upper().replace(".HK", "").replace(".SZ", "").replace(".SS", "").replace(".SH", "")
 
     # 1. 查硬编码映射表
     if clean in STOCK_KEYWORDS:

@@ -217,6 +217,17 @@ async def main():
             llm_model=settings.LLM_MODEL,
             target_name=target_info.name,
         )
+        for agent_result in agent_results:
+            if agent_result.agent_name != AGENT_NEWS:
+                continue
+            snapshot_meta = (agent_result.data_summary or {}).get("news_snapshot")
+            if snapshot_meta:
+                try:
+                    from src.data.news_snapshot_archive import NewsSnapshotArchive
+
+                    NewsSnapshotArchive().attach_prediction_id(snapshot_meta, pid)
+                except Exception as e:
+                    logger.debug(f"新闻快照关联预测ID失败: {e}")
         logger.info(f"💾 预测已记录: {pid}")
     except Exception as e:
         logger.warning(f"⚠️ 预测记录失败: {e}")

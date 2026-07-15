@@ -12,6 +12,8 @@
 import pytest
 import sys
 import os
+import json
+import types
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -28,12 +30,193 @@ from src.utils.industry_chain import (
     INDUSTRY_CATALOGS,
 )
 from src.utils.industry_calibrator import IndustryConfidenceCalibrator
+from src.data.industry_fetcher import IndustryData, IndustryFetcher
+from src.data.industry_preprocessor import (
+    calculate_industry_metrics,
+    process_industry_data,
+)
 
 
 def _calibration_stats_path(name: str) -> Path:
     path = Path(".pytest-tmp") / "calibration" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+class TestIndustryDataCoverageFixes:
+    def test_metrics_keep_pb_and_roe_when_pe_missing(self):
+        metrics = calculate_industry_metrics([
+            {"code": "A", "pb": 2.0, "roe": 10.0},
+            {"code": "B", "pb": 3.0, "roe": 14.0},
+        ])
+
+        assert metrics.avg_pe is None
+        assert metrics.avg_pb == 2.5
+        assert metrics.avg_roe == 12.0
+        assert metrics.sample_size == 2
+
+    def test_reference_only_rank_has_explicit_pe_rank(self):
+        processed = process_industry_data(
+            stock_data={"pe": 10.0, "pb": 1.0, "roe": 12.0},
+            industry_peers=[],
+            reference_metrics={"pe": 12.0, "pb": 1.4, "roe": 11.0},
+        )
+
+        rank = processed["rank_in_industry"]
+        assert rank["pe_rank"] == "参考均值(无成分股排名)"
+        assert processed["data_quality"]["overall"] >= 0.5
+
+    def test_reference_supplements_missing_peer_roe(self):
+        processed = process_industry_data(
+            stock_data={"pe": 9.5, "pb": 0.9, "roe": 10.5},
+            industry_peers=[
+                {"code": "0005", "pe": 9.5, "pb": 0.9},
+                {"code": "0011", "pe": 10.5, "pb": 1.1},
+                {"code": "0388", "pe": 30.0, "pb": 7.5},
+            ],
+            reference_metrics={"pe": 12.0, "pb": 1.4, "roe": 12.0},
+        )
+
+        metrics = processed["industry_metrics"]
+        assert metrics["avg_roe"] == 12.0
+        assert metrics["reference_supplemented"] is True
+
+    def test_reference_peers_are_low_reliability_not_full_constituents(self):
+        processed = process_industry_data(
+            stock_data={"pe": 28.0, "pb": 5.0, "roe": 9.0},
+            industry_peers=[
+                {"code": "0700", "pe": 18.0, "pb": 3.6, "roe": 18.0, "source": "reference"},
+                {"code": "9988", "pe": 15.0, "pb": 1.8, "roe": 12.0, "source": "reference"},
+                {"code": "9618", "pe": 12.0, "pb": 1.7, "roe": 13.0, "source": "reference"},
+                {"code": "9888", "pe": 11.0, "pb": 1.4, "roe": 10.0, "source": "reference"},
+            ],
+            reference_metrics={"pe": 20.0, "pb": 4.0, "roe": 15.0},
+        )
+
+        dq = processed["data_quality"]
+        assert dq["has_constituents"] is False
+        assert dq["has_reference_peers"] is True
+        assert dq["ranking_reliability"] == "reference_snapshot"
+        assert dq["confidence_ceiling"] <= 0.45
+
+    def test_apply_a_share_tencent_fields_fills_stock_pb(self):
+        fetcher = IndustryFetcher()
+        data = IndustryData(symbol="000001")
+        fields = [""] * 47
+        fields[1] = "平安银行"
+        fields[3] = "10.50"
+        fields[39] = "4.73"
+        fields[44] = "2037.59"
+        fields[46] = "0.45"
+
+        latest_price = fetcher._apply_a_share_tencent_fields(data, fields)
+
+        assert latest_price == 10.5
+        assert data.company_name == "平安银行"
+        assert data.stock_pe == 4.73
+        assert data.stock_pb == 0.45
+        assert data.stock_market_cap == 2037.59
+
+    def test_pb_rank_is_in_processed_result(self):
+        processed = process_industry_data(
+            stock_data={"pe": 10.0, "pb": 1.2, "roe": 12.0},
+            industry_peers=[
+                {"code": "A", "pe": 8.0, "pb": 0.8, "roe": 8.0},
+                {"code": "B", "pe": 10.0, "pb": 1.2, "roe": 12.0},
+                {"code": "C", "pe": 15.0, "pb": 2.4, "roe": 16.0},
+            ],
+        )
+
+        rank = processed["rank_in_industry"]
+        assert rank["pb_rank"] == "2/3"
+        assert rank["pb_percentile"] == pytest.approx(0.67, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_fetch_constituents_uses_board_alias_and_supplements_roe(self, monkeypatch):
+        pd = pytest.importorskip("pandas")
+
+        def stock_board_industry_cons_em(symbol):
+            if symbol == "白酒":
+                return pd.DataFrame()
+            assert symbol == "酿酒行业"
+            return pd.DataFrame([
+                {
+                    "代码": "600519",
+                    "名称": "贵州茅台",
+                    "最新价": 1500.0,
+                    "市盈率-动态": 25.0,
+                    "市净率": 8.0,
+                    "涨跌幅": 1.2,
+                },
+                {
+                    "代码": "000858",
+                    "名称": "五粮液",
+                    "最新价": 150.0,
+                    "市盈率-动态": 18.0,
+                    "市净率": 4.0,
+                    "涨跌幅": 0.8,
+                },
+            ])
+
+        def stock_financial_abstract_ths(symbol, indicator):
+            return pd.DataFrame([
+                {"净资产收益率": "20.0%", "每股净资产": "50.0"},
+            ])
+
+        fake_akshare = types.SimpleNamespace(
+            stock_board_industry_cons_em=stock_board_industry_cons_em,
+            stock_financial_abstract_ths=stock_financial_abstract_ths,
+        )
+        monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+        fetcher = IndustryFetcher()
+        monkeypatch.setattr(fetcher, "_fetch_a_share_curated_peers", lambda industry_name, target_code="": [])
+
+        peers = await fetcher._fetch_industry_constituents("白酒", "600519")
+
+        assert peers[0]["board"] == "酿酒行业"
+        assert peers[0]["roe"] == 20.0
+        assert "ths_financial" in peers[0]["source"]
+
+    def test_curated_a_share_peers_use_tencent_realtime_snapshot(self, monkeypatch):
+        def fake_get(url, timeout=6, verify=False):
+            code = url[-6:]
+            fields = [""] * 47
+            fields[1] = "平安银行" if code == "000001" else "招商银行"
+            fields[3] = "10.50"
+            fields[32] = "1.20"
+            fields[39] = "5.20"
+            fields[44] = "2000.00"
+            fields[46] = "0.55"
+            return types.SimpleNamespace(text="~".join(fields))
+
+        fake_requests = types.SimpleNamespace(get=fake_get)
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+        peers = IndustryFetcher()._fetch_a_share_curated_peers("银行", "000001")
+
+        assert peers
+        assert peers[0]["source"] == "tencent_peer_realtime"
+        assert peers[0]["pe"] == 5.2
+        assert peers[0]["pb"] == 0.55
+
+    def test_peer_codes_expand_from_known_industry_mapping(self):
+        fetcher = IndustryFetcher()
+
+        codes = fetcher._a_share_peer_codes("房地产", "000002")
+
+        assert codes[0] == "000002"
+        assert "600048" in codes
+        assert "601155" in codes
+
+    def test_peer_codes_include_classifier_cache(self):
+        fetcher = IndustryFetcher()
+        fetcher._classifier_cache.cache["688001"] = "化工"
+
+        codes = fetcher._a_share_peer_codes("化工", "688001")
+
+        assert codes[0] == "688001"
+        assert "603260" in codes
 
 
 # ================================================================
@@ -299,6 +482,229 @@ class TestIndustryConfidenceCalibrator:
         assert "confidence_bins" in stats
         assert "industry_buckets" in stats
         assert "quality_buckets" in stats
+
+
+# ================================================================
+# 行业对比分析师护栏测试
+# ================================================================
+
+
+class TestIndustryAnalystGuardrails:
+    @pytest.fixture
+    def analyst(self):
+        from src.agents.industry_analyst import IndustryAnalyst
+
+        instance = IndustryAnalyst.__new__(IndustryAnalyst)
+        instance.name = "行业对比分析师"
+        return instance
+
+    def _base_data(
+        self,
+        *,
+        pe_percentile=0.88,
+        roe_percentile=0.78,
+        value_score="overpriced",
+        cycle="slowdown",
+        overall=0.78,
+    ):
+        return {
+            "symbol": "002396",
+            "company_name": "星网锐捷",
+            "industry_name": "通信",
+            "data_source": "fixture",
+            "rank_in_industry": {
+                "pe_percentile": pe_percentile,
+                "roe_percentile": roe_percentile,
+                "valuation_label": "高PE+低ROE：估值偏高，需警惕",
+            },
+            "value_score": {
+                "score": value_score,
+                "value_ratio": 1.95,
+                "interpretation": "性价比差，估值显著高于盈利能力对应的合理水平",
+            },
+            "industry_trend": {
+                "cycle": cycle,
+                "phase": "衰退期" if cycle == "slowdown" else "复苏期",
+                "signal": "行业下行+估值仍贵，可能进一步下跌",
+            },
+            "data_quality": {
+                "overall": overall,
+                "has_constituents": overall >= 0.5,
+                "has_trend": overall >= 0.5,
+                "confidence_ceiling": 0.8 if overall >= 0.7 else 0.35,
+            },
+            "_rotation_signals": [],
+            "_industry_chain": {},
+            "_catalysts": [],
+            "anomaly_flags": {},
+        }
+
+    def test_fixture_scenarios_match_decision_matrix(self, analyst):
+        """固定离线样本应稳定映射到预期行业矩阵。"""
+        fixture = Path(__file__).parent / "fixtures" / "industry_scenarios.json"
+        scenarios = json.loads(fixture.read_text(encoding="utf-8"))
+
+        for scenario in scenarios:
+            signals = analyst._derive_industry_signals(
+                scenario["data"],
+                scenario["timeframe"],
+            )
+            matrix = signals["decision_matrix"]
+            assert matrix["suggested_direction"] == scenario["expected_direction"], scenario["name"]
+            assert matrix["matrix_position"] == scenario["expected_position"], scenario["name"]
+
+    def test_validate_consistency_returns_issues(self, analyst):
+        """高估、行业下行但看涨时应被校验识别。"""
+        from src.core.result import AnalysisResult, Direction, Magnitude
+
+        result = AnalysisResult(
+            agent_name="行业对比分析师",
+            target="002396",
+            timeframe="中期(1月)",
+            direction=Direction.BULLISH,
+            magnitude=Magnitude(2.0, 8.0),
+            confidence=0.72,
+            reasoning="测试",
+            risks=[],
+        )
+
+        issues = analyst._validate_consistency(result, self._base_data())
+
+        assert issues
+        assert any("方向为看涨" in issue for issue in issues)
+        assert any("性价比评分" in issue for issue in issues)
+
+    def test_apply_consistency_issues_degrades_result(self, analyst):
+        """一致性问题应进入 risks/reasoning，并降低置信度。"""
+        from src.core.result import AnalysisResult, Direction, Magnitude
+
+        result = AnalysisResult(
+            agent_name="行业对比分析师",
+            target="002396",
+            timeframe="中期(1月)",
+            direction=Direction.BULLISH,
+            magnitude=Magnitude(2.0, 8.0),
+            confidence=0.72,
+            reasoning="测试",
+            risks=[],
+        )
+
+        updated = analyst._apply_consistency_issues(
+            result,
+            ["性价比评分为'明显高估'但方向为看涨——逻辑矛盾"],
+        )
+
+        assert updated.status == "degraded"
+        assert updated.confidence < 0.72
+        assert any("行业一致性校验" in risk for risk in updated.risks)
+        assert "行业一致性校验提示" in updated.reasoning
+
+    def test_build_data_summary_contains_evidence_packet(self, analyst):
+        """行业摘要应带结构化证据，供 API 和 Aggregator 消费。"""
+        data = self._base_data(
+            pe_percentile=0.18,
+            roe_percentile=0.22,
+            value_score="excellent",
+            cycle="recovery",
+            overall=0.82,
+        )
+
+        summary = analyst._build_data_summary(
+            data,
+            {"preliminary_direction": "bullish"},
+            ["测试校验问题"],
+        )
+
+        assert summary["industry"] == "通信"
+        assert summary["quality"] == 0.82
+        assert summary["evidence"]["decision_matrix"]["suggested_direction"] == "bullish"
+        assert summary["consistency_issues"] == ["测试校验问题"]
+
+    def test_reference_peer_matrix_uses_qualified_language(self, analyst):
+        """港股参考 peer 排名不能输出绝对化行业结论。"""
+        data = self._base_data(
+            pe_percentile=1.0,
+            roe_percentile=1.0,
+            value_score="overpriced",
+            cycle="unknown",
+            overall=0.40,
+        )
+        data["data_source"] = "hk_peer_reference"
+        data["data_quality"]["has_constituents"] = False
+        data["data_quality"]["has_reference_peers"] = True
+        data["data_quality"]["ranking_reliability"] = "reference_snapshot"
+        data["data_quality"]["confidence_ceiling"] = 0.45
+
+        evidence = analyst._build_evidence_packet(data)
+
+        assert evidence["decision_matrix"]["suggested_direction"] == "neutral"
+        assert "参考 peer 快照" in evidence["decision_matrix"]["reason"]
+        assert evidence["confidence_constraints"]["max_confidence"] <= 0.45
+        assert any("参考 peer 样本" in item for item in evidence["evidence"]["neutral"])
+
+    def test_sanitize_reference_peer_absolute_claims(self, analyst):
+        """reference peer 场景下移除垫底/绝对劣势措辞。"""
+        from src.core.result import AnalysisResult, Direction, Magnitude
+
+        data = self._base_data(overall=0.40)
+        data["data_source"] = "hk_peer_reference"
+        data["data_quality"]["has_reference_peers"] = True
+        data["data_quality"]["ranking_reliability"] = "reference_snapshot"
+        result = AnalysisResult(
+            agent_name="行业对比分析师",
+            target="3690",
+            timeframe="短期(1周)",
+            direction=Direction.NEUTRAL,
+            magnitude=Magnitude(-2.0, 2.0),
+            confidence=0.4,
+            reasoning="ROE垫底，基本面绝对劣势。",
+            key_factors=["ROE垫底"],
+            risks=[],
+        )
+
+        issues = analyst._sanitize_reference_peer_claims(result, data)
+
+        assert issues
+        assert "垫底" not in result.reasoning
+        assert "绝对劣势" not in result.reasoning
+        assert all("垫底" not in item for item in result.key_factors)
+
+    def test_apply_evidence_constraints_caps_matrix_conflict(self, analyst):
+        """LLM 方向与行业矩阵冲突时，应降权并标记 degraded。"""
+        from src.core.result import AnalysisResult, Direction, Magnitude
+
+        data = self._base_data()
+        result = AnalysisResult(
+            agent_name="行业对比分析师",
+            target="002396",
+            timeframe="中期(1月)",
+            direction=Direction.BULLISH,
+            magnitude=Magnitude(2.0, 8.0),
+            confidence=0.72,
+            reasoning="测试",
+            risks=[],
+        )
+
+        issues = analyst._apply_evidence_constraints(
+            result, data, {"timeframe": "中期(1月)"}
+        )
+
+        assert issues
+        assert result.status == "degraded"
+        assert result.confidence <= 0.5
+        assert any("行业证据约束" in risk for risk in result.risks)
+
+    def test_step_b_prompt_includes_evidence_packet(self, analyst):
+        """Step B Prompt 应显式注入代码计算的行业证据包。"""
+        prompt = analyst._build_step_b_prompt(
+            self._base_data(),
+            {"target": "002396", "timeframe": "中期(1月)"},
+            {"preliminary_direction": "bearish"},
+        )
+
+        assert "行业证据包" in prompt
+        assert "decision_matrix" in prompt
+        assert "confidence_constraints" in prompt
 
 
 # ================================================================

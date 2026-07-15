@@ -23,6 +23,7 @@ from src.data.industry_preprocessor import (
     IndustryReferenceCache,
     EXTENDED_KNOWN_INDUSTRIES,
     KNOWN_HK_INDUSTRIES,
+    HK_PEER_REFERENCE,
     infer_industry_from_name,
     process_industry_data,
     _safe_float,
@@ -108,6 +109,19 @@ class TestCalculateIndustryRank:
         # PE=10: count_below = sum(1 for pe in [1..20] if pe <= 10) = 10
         assert rank.pe_rank == "10/20"
         assert rank.pe_percentile == 0.50
+
+    def test_roe_rank_clamped_to_peer_count(self):
+        peers = [
+            {"roe": 20.0},
+            {"roe": 15.0},
+            {"roe": 10.0},
+            {"roe": 8.0},
+        ]
+
+        rank = calculate_industry_rank(None, 6.0, peers)
+
+        assert rank.roe_rank == "4/4"
+        assert rank.roe_percentile == 1.0
 
     def test_rank_cheapest(self):
         peers = [{"pe": float(i)} for i in range(5, 55)]  # PE 5~54
@@ -261,6 +275,8 @@ class TestExtendedIndustryMapping:
     def test_hk_mapping(self):
         assert "0700" in KNOWN_HK_INDUSTRIES
         assert KNOWN_HK_INDUSTRIES["0700"]["name"] == "互联网"
+        assert KNOWN_HK_INDUSTRIES["9618"]["name"] == "互联网"
+        assert "9618" in HK_PEER_REFERENCE
 
     def test_mapping_count(self):
         # 扩展后应超过 50 个映射
@@ -332,6 +348,18 @@ class TestProcessIndustryData:
         # 无成分股时 ceiling 应较低
         assert result["data_quality"]["confidence_ceiling"] <= 0.50
 
+    def test_pipeline_reference_metrics_not_complete_missing(self):
+        stock = {"pe": 12.0, "roe": 13.0}
+        ref = {"pe": 20.0, "pb": 4.0, "roe": 15.0, "note": "近似参考值"}
+
+        result = process_industry_data(stock, [], None, reference_metrics=ref)
+
+        assert result["industry_metrics"]["avg_pe"] == 20.0
+        assert result["value_score"]["reference_only"] is True
+        assert result["data_quality"]["has_reference_metrics"] is True
+        assert result["data_quality"]["overall"] >= 0.3
+        assert "完全缺失" not in result["data_quality"]["notes"]
+
     def test_pipeline_with_peers_no_trend(self):
         stock = {"pe": 10.0}
         peers = [{"pe": float(i)} for i in range(1, 21)]
@@ -342,6 +370,37 @@ class TestProcessIndustryData:
         assert result["data_quality"]["has_trend"] is False
         # 有成分股但无趋势 → ceiling 介于中间
         assert result["data_quality"]["confidence_ceiling"] >= 0.45
+
+    def test_hk_jd_fetcher_uses_reference_peers(self, monkeypatch):
+        from src.data.industry_fetcher import IndustryFetcher
+
+        async def fake_stock_data(self, result, symbol, market):
+            result.company_name = "京东集团"
+            result.stock_pe = 12.0
+            result.stock_pb = 1.7
+            result.stock_roe = 13.0
+            result.data_source = "fixture"
+
+        async def no_live_peer(self, symbol):
+            return None
+
+        async def no_financial_supplement(self, result, symbol):
+            return None
+
+        monkeypatch.setattr(IndustryFetcher, "_fetch_stock_data", fake_stock_data)
+        monkeypatch.setattr(IndustryFetcher, "_fetch_hk_peer_snapshot", no_live_peer)
+        monkeypatch.setattr(IndustryFetcher, "_fetch_hk_financial_supplement", no_financial_supplement)
+
+        fetcher = IndustryFetcher()
+        result = __import__("asyncio").run(fetcher.fetch_enhanced("9618", "HK"))
+
+        assert result["industry_name"] == "互联网"
+        assert result["market"] == "HK"
+        assert result["data_source"] == "hk_peer_reference"
+        assert result["data_quality"]["has_constituents"] is False
+        assert result["data_quality"]["has_reference_peers"] is True
+        assert result["data_quality"]["overall"] >= 0.3
+        assert result["rank_in_industry"].get("pe_rank") != "N/A"
 
 
 # ================================================================

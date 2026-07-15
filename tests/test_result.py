@@ -5,6 +5,7 @@
 import json
 import pytest
 from src.core.result import Direction, Magnitude, AnalysisResult, FinalReport
+from src.core.prediction_target import resolve_prediction_target
 
 
 # ================================================================
@@ -239,6 +240,27 @@ class TestFinalReport:
         d = report.to_dict()
         assert d["target"] == "0700.HK"
         assert d["direction"] == "neutral"
+        assert "prob_no_edge" in d
+
+    def test_explicit_prediction_probabilities_are_preserved(self):
+        spec = resolve_prediction_target(
+            "短期(1周)",
+            Direction.BULLISH,
+            Magnitude(2.0, 4.0),
+            0.80,
+            {
+                "expected_return_pct": 2.5,
+                "prob_up": 0.55,
+                "prob_down": 0.25,
+                "prob_neutral": 0.20,
+            },
+            target="000001",
+        )
+
+        assert spec.expected_return_pct == 2.5
+        assert spec.prob_up == 0.55
+        assert spec.prob_down == 0.25
+        assert spec.prob_neutral == 0.20
 
 
 # ================================================================

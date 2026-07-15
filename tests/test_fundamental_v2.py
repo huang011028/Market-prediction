@@ -208,8 +208,9 @@ class TestQualityScorecard:
         financials = {}
         valuation = {}
         sc = generate_quality_scorecard(financials, valuation)
-        assert sc.total < 30  # 数据全缺失应得低分
-        assert sc.rating == "weak"
+        assert sc.total == 0
+        assert sc.rating == "unknown"
+        assert sc.profitability["not_scorable"] is True
 
     def test_pe_percentile_impact(self):
         """估值分位越低，估值维度得分越高"""
@@ -239,6 +240,18 @@ class TestDataQualityAssessment:
         report = assess_data_quality(financials, valuation)
         assert report.completeness >= 0.9
         assert report.confidence_ceiling == 0.85
+
+    def test_agent_output_field_aliases(self):
+        financials = {
+            "latest_revenue_100m": 100, "latest_net_profit_100m": 20,
+            "revenue_yoy_pct": 15, "profit_yoy_pct": 22,
+            "gross_margin_pct": 50, "net_margin_pct": 20,
+            "roe_pct": 18, "eps": 2.5,
+        }
+        valuation = {"pe": 15, "pb": 3.0, "market_cap_100m": 1000, "dividend_yield_pct": 2.5}
+        report = assess_data_quality(financials, valuation)
+        assert report.completeness >= 0.9
+        assert report.data_gaps == []
 
     def test_partial_data(self):
         financials = {"roe_pct": 15}  # 只有一个财务字段

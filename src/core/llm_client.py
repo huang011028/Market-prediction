@@ -8,11 +8,18 @@ LLM 调用客户端
 import asyncio
 import time
 import json
+import ssl
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
 import aiohttp
 import requests
+
+try:
+    import certifi
+except Exception:  # pragma: no cover - certifi is optional at runtime
+    certifi = None
 
 from config.settings import get_settings
 
@@ -83,9 +90,11 @@ class LLMClient:
         model: str = "deepseek-v4-pro",
         temperature: float = 0.3,
         max_tokens: int = 4096,
-        max_retries: int = 3,
+        max_retries: Optional[int] = None,
         timeout_seconds: int = 120,
         verify_ssl: bool = True,
+        max_concurrent_requests: Optional[int] = None,
+        min_request_interval_seconds: Optional[float] = None,
     ):
         """
         Args:
@@ -107,9 +116,24 @@ class LLMClient:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.max_retries = max_retries
+        self.max_retries = int(max_retries if max_retries is not None else self._default_max_retries())
         self.timeout = timeout_seconds
         self.verify_ssl = verify_ssl
+        self._ca_bundle_path = certifi.where() if (verify_ssl and certifi) else None
+        self.max_concurrent_requests = max(
+            1,
+            int(max_concurrent_requests or self._default_max_concurrent_requests()),
+        )
+        self.max_prompt_chars = self._default_max_prompt_chars()
+        if min_request_interval_seconds is None:
+            min_request_interval_seconds = self._default_min_request_interval_seconds()
+        self.min_request_interval_seconds = max(0.0, float(min_request_interval_seconds))
+        self._sync_semaphore = threading.BoundedSemaphore(self.max_concurrent_requests)
+        self._sync_rate_lock = threading.Lock()
+        self._async_semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+        self._async_rate_lock = asyncio.Lock()
+        self._last_request_started_at = 0.0
+        self._rate_limited_until = 0.0
 
         # 请求头模板
         self._headers = {
@@ -143,6 +167,43 @@ class LLMClient:
         url = f"{self.base_url}/chat/completions"
         payload = self._build_payload(system_prompt, user_prompt, temperature)
 
+        with self._sync_semaphore:
+            self._raise_if_rate_limited()
+            self._sync_wait_for_rate_slot()
+            return self._chat_with_retries(url, payload)
+
+    # ================================================================
+    # 异步调用
+    # ================================================================
+
+    async def achat(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: Optional[float] = None,
+    ) -> LLMResponse:
+        """异步调用 LLM
+
+        Args:
+            system_prompt: 系统提示词
+            user_prompt: 用户提示词
+            temperature: 温度覆盖（None 使用默认值）
+
+        Returns:
+            LLMResponse
+
+        Raises:
+            LLMError: 调用失败
+        """
+        url = f"{self.base_url}/chat/completions"
+        payload = self._build_payload(system_prompt, user_prompt, temperature)
+
+        async with self._async_semaphore:
+            self._raise_if_rate_limited()
+            await self._async_wait_for_rate_slot()
+            return await self._achat_with_retries(url, payload)
+
+    def _chat_with_retries(self, url: str, payload: dict) -> LLMResponse:
         last_error: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
@@ -152,14 +213,19 @@ class LLMClient:
                     headers=self._headers,
                     json=payload,
                     timeout=(30, self.timeout),
-                    verify=self.verify_ssl,
+                    verify=self._requests_verify(),
                 )
 
-                # 处理 HTTP 错误
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 2**attempt))
-                    time.sleep(retry_after)
-                    continue
+                    error_body = response.text[:500]
+                    self._mark_rate_limited(response.headers, attempt)
+                    last_error = LLMRateLimitError(
+                        f"API 限流 (429): {error_body or 'Too Many Requests'}"
+                    )
+                    if attempt < self.max_retries:
+                        time.sleep(self._retry_after_seconds(response.headers, attempt))
+                        continue
+                    raise last_error
 
                 if response.status_code == 401:
                     raise LLMAuthenticationError(
@@ -193,37 +259,12 @@ class LLMClient:
 
         raise LLMError(f"LLM 调用失败，已重试 {self.max_retries} 次: {last_error}")
 
-    # ================================================================
-    # 异步调用
-    # ================================================================
-
-    async def achat(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: Optional[float] = None,
-    ) -> LLMResponse:
-        """异步调用 LLM
-
-        Args:
-            system_prompt: 系统提示词
-            user_prompt: 用户提示词
-            temperature: 温度覆盖（None 使用默认值）
-
-        Returns:
-            LLMResponse
-
-        Raises:
-            LLMError: 调用失败
-        """
-        url = f"{self.base_url}/chat/completions"
-        payload = self._build_payload(system_prompt, user_prompt, temperature)
-
+    async def _achat_with_retries(self, url: str, payload: dict) -> LLMResponse:
         last_error: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                connector = aiohttp.TCPConnector(ssl=self.verify_ssl)
+                connector = aiohttp.TCPConnector(ssl=self._aiohttp_ssl_context())
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.post(
                         url,
@@ -235,11 +276,17 @@ class LLMClient:
                         ),
                     ) as response:
                         if response.status == 429:
-                            retry_after = int(
-                                response.headers.get("Retry-After", 2**attempt)
+                            error_body = (await response.text())[:500]
+                            self._mark_rate_limited(response.headers, attempt)
+                            last_error = LLMRateLimitError(
+                                f"API 限流 (429): {error_body or 'Too Many Requests'}"
                             )
-                            await asyncio.sleep(retry_after)
-                            continue
+                            if attempt < self.max_retries:
+                                await asyncio.sleep(
+                                    self._retry_after_seconds(response.headers, attempt)
+                                )
+                                continue
+                            raise last_error
 
                         if response.status == 401:
                             raise LLMAuthenticationError(
@@ -298,6 +345,8 @@ class LLMClient:
             max_retries=self.max_retries,
             timeout_seconds=self.timeout,
             verify_ssl=self.verify_ssl,
+            max_concurrent_requests=self.max_concurrent_requests,
+            min_request_interval_seconds=self.min_request_interval_seconds,
         )
 
     def with_temperature(self, temperature: float) -> "LLMClient":
@@ -311,11 +360,94 @@ class LLMClient:
             max_retries=self.max_retries,
             timeout_seconds=self.timeout,
             verify_ssl=self.verify_ssl,
+            max_concurrent_requests=self.max_concurrent_requests,
+            min_request_interval_seconds=self.min_request_interval_seconds,
         )
 
     # ================================================================
     # 内部方法
     # ================================================================
+
+    def _default_max_concurrent_requests(self) -> int:
+        if self._is_rate_sensitive_model():
+            return 1
+        return 4
+
+    def _default_max_retries(self) -> int:
+        if self._is_rate_sensitive_model():
+            return 1
+        return 3
+
+    def _is_rate_sensitive_model(self) -> bool:
+        identity = f"{self.base_url} {self.model}".lower()
+        return "bigmodel.cn" in identity or self.model.lower().startswith("glm")
+
+    def _default_min_request_interval_seconds(self) -> float:
+        if self._is_rate_sensitive_model():
+            return 3.0
+        return 0.0
+
+    def _default_max_prompt_chars(self) -> int:
+        if self._is_rate_sensitive_model():
+            return 3500
+        return 0
+
+    def _raise_if_rate_limited(self) -> None:
+        remaining = self._rate_limited_until - time.monotonic()
+        if remaining > 0:
+            raise LLMRateLimitError(
+                f"API 仍处于限流冷却期，约 {remaining:.0f} 秒后可重试"
+            )
+
+    def _mark_rate_limited(self, headers, attempt: int) -> None:
+        cooldown = self._retry_after_seconds(headers, attempt)
+        if self._is_rate_sensitive_model():
+            cooldown = max(cooldown, 90)
+        self._rate_limited_until = max(
+            self._rate_limited_until,
+            time.monotonic() + cooldown,
+        )
+
+    def _sync_wait_for_rate_slot(self) -> None:
+        if self.min_request_interval_seconds <= 0:
+            return
+        with self._sync_rate_lock:
+            elapsed = time.monotonic() - self._last_request_started_at
+            wait = self.min_request_interval_seconds - elapsed
+            if wait > 0:
+                time.sleep(wait)
+            self._last_request_started_at = time.monotonic()
+
+    async def _async_wait_for_rate_slot(self) -> None:
+        if self.min_request_interval_seconds <= 0:
+            return
+        async with self._async_rate_lock:
+            elapsed = time.monotonic() - self._last_request_started_at
+            wait = self.min_request_interval_seconds - elapsed
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_request_started_at = time.monotonic()
+
+    @staticmethod
+    def _retry_after_seconds(headers, attempt: int) -> int:
+        raw = headers.get("Retry-After") if headers else None
+        try:
+            value = int(float(raw))
+        except (TypeError, ValueError):
+            value = 2**attempt
+        return max(1, min(value, 30))
+
+    def _requests_verify(self):
+        if not self.verify_ssl:
+            return False
+        return self._ca_bundle_path or True
+
+    def _aiohttp_ssl_context(self):
+        if not self.verify_ssl:
+            return False
+        if self._ca_bundle_path:
+            return ssl.create_default_context(cafile=self._ca_bundle_path)
+        return True
 
     def _build_payload(
         self,
@@ -324,6 +456,8 @@ class LLMClient:
         temperature: Optional[float] = None,
     ) -> dict:
         """构建 API 请求 payload"""
+        system_prompt = self._compact_system_prompt(system_prompt)
+        user_prompt = self._compact_user_prompt(user_prompt)
         return {
             "model": self.model,
             "messages": [
@@ -334,6 +468,27 @@ class LLMClient:
             "max_tokens": self.max_tokens,
             "stream": False,
         }
+
+    def _compact_system_prompt(self, system_prompt: str) -> str:
+        if self.max_prompt_chars <= 0:
+            return system_prompt
+        return (
+            system_prompt
+            + "\n\n[模型执行约束] 当前模型需走低延迟路径：只输出紧凑 JSON；"
+            "reasoning 不超过 160 个汉字；key_factors 不超过 4 条；risks 不超过 3 条；不要输出 Markdown。"
+        )
+
+    def _compact_user_prompt(self, user_prompt: str) -> str:
+        if self.max_prompt_chars <= 0 or len(user_prompt) <= self.max_prompt_chars:
+            return user_prompt
+        head_chars = int(self.max_prompt_chars * 0.68)
+        tail_chars = self.max_prompt_chars - head_chars
+        omitted = len(user_prompt) - self.max_prompt_chars
+        return (
+            user_prompt[:head_chars]
+            + f"\n\n[系统提示: 当前模型上下文较慢，已折叠中间 {omitted} 个字符；请只基于保留数据和明确可见证据输出。]\n\n"
+            + user_prompt[-tail_chars:]
+        )
 
     def _parse_response(self, data: dict) -> LLMResponse:
         """解析 API 返回数据"""

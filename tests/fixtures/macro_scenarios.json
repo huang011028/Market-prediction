@@ -1,0 +1,194 @@
+[
+  {
+    "name": "hk_internet_easing_risk_on",
+    "market": "HK",
+    "timeframe": "中期(1月)",
+    "expected_direction": "bullish",
+    "expected_position": "互联网平台+宏观顺风",
+    "stock_context": {
+      "symbol": "0700",
+      "market": "HK",
+      "company_name": "腾讯控股",
+      "inferred_sector": "互联网平台",
+      "macro_sensitivity": {
+        "rate_sensitive": 0.8,
+        "rate_direction": "negative",
+        "fx_sensitive": 0.4,
+        "cycle_sensitive": 0.5,
+        "geopolitical_sensitive": 0.7,
+        "liquidity_sensitive": 0.7
+      },
+      "transmission_hints": ["利率下行 → DCF估值提升"]
+    },
+    "data": {
+      "data_source": "fixture",
+      "china": {
+        "pmi_manufacturing": 51.2,
+        "gdp_yoy_pct": 5.2,
+        "lpr_1y_pct": 3.1,
+        "m2_yoy_pct": 8.5
+      },
+      "us": {
+        "fed_funds_rate_pct": 4.25,
+        "10y_yield_pct": 3.5,
+        "vix": 14.5
+      },
+      "forex": {
+        "usd_cny": 7.02,
+        "dxy": 100.5
+      },
+      "_geopolitical": {
+        "risk_level": "中等偏低",
+        "risk_score": 0.4,
+        "trend": "稳定",
+        "recent_events": [{"title": "外交关系改善"}]
+      },
+      "data_quality": {
+        "realtime_count": 9,
+        "reference_count": 0,
+        "overall_freshness": "82%"
+      }
+    }
+  },
+  {
+    "name": "hk_internet_high_rate_risk_off",
+    "market": "HK",
+    "timeframe": "中期(1月)",
+    "expected_direction": "bearish",
+    "expected_position": "互联网平台+宏观逆风",
+    "stock_context": {
+      "symbol": "0700",
+      "market": "HK",
+      "company_name": "腾讯控股",
+      "inferred_sector": "互联网平台",
+      "macro_sensitivity": {
+        "rate_sensitive": 0.8,
+        "rate_direction": "negative",
+        "fx_sensitive": 0.4,
+        "cycle_sensitive": 0.5,
+        "geopolitical_sensitive": 0.7,
+        "liquidity_sensitive": 0.7
+      },
+      "transmission_hints": ["利率上行 → DCF估值压缩"]
+    },
+    "data": {
+      "data_source": "fixture",
+      "china": {
+        "pmi_manufacturing": 48.8,
+        "gdp_yoy_pct": 3.8,
+        "lpr_1y_pct": 3.9,
+        "m2_yoy_pct": 5.5
+      },
+      "us": {
+        "fed_funds_rate_pct": 5.25,
+        "10y_yield_pct": 4.8,
+        "vix": 28.0
+      },
+      "forex": {
+        "usd_cny": 7.3,
+        "dxy": 106.0
+      },
+      "_geopolitical": {
+        "risk_level": "偏高",
+        "risk_score": 0.75,
+        "trend": "恶化",
+        "recent_events": [{"title": "科技制裁升级"}]
+      },
+      "data_quality": {
+        "realtime_count": 8,
+        "reference_count": 1,
+        "overall_freshness": "74%"
+      }
+    }
+  },
+  {
+    "name": "hk_bank_high_rate_tailwind",
+    "market": "HK",
+    "timeframe": "中期(1月)",
+    "expected_direction": "bullish",
+    "expected_position": "银行+宏观顺风",
+    "stock_context": {
+      "symbol": "0005",
+      "market": "HK",
+      "company_name": "汇丰控股",
+      "inferred_sector": "银行",
+      "macro_sensitivity": {
+        "rate_sensitive": 0.9,
+        "rate_direction": "positive",
+        "fx_sensitive": 0.7,
+        "cycle_sensitive": 0.6,
+        "geopolitical_sensitive": 0.3,
+        "liquidity_sensitive": 0.8
+      },
+      "transmission_hints": ["利率上行 → 净息差扩大"]
+    },
+    "data": {
+      "data_source": "fixture",
+      "china": {
+        "pmi_manufacturing": 51.0,
+        "gdp_yoy_pct": 5.0,
+        "lpr_1y_pct": 3.8,
+        "m2_yoy_pct": 8.0
+      },
+      "us": {
+        "fed_funds_rate_pct": 5.25,
+        "10y_yield_pct": 4.8,
+        "vix": 14.0
+      },
+      "forex": {
+        "usd_cny": 7.1,
+        "dxy": 106.0
+      },
+      "_geopolitical": {
+        "risk_level": "中等偏低",
+        "risk_score": 0.4,
+        "trend": "稳定",
+        "recent_events": [{"title": "金融市场风险偏好改善"}]
+      },
+      "data_quality": {
+        "realtime_count": 8,
+        "reference_count": 1,
+        "overall_freshness": "72%"
+      }
+    }
+  },
+  {
+    "name": "heavily_missing_macro_data",
+    "market": "A",
+    "timeframe": "短期(1周)",
+    "expected_direction": "neutral",
+    "expected_position": "综合+宏观混合",
+    "stock_context": {
+      "symbol": "000001",
+      "market": "A",
+      "company_name": "平安银行",
+      "inferred_sector": "综合",
+      "macro_sensitivity": {
+        "rate_sensitive": 0.5,
+        "rate_direction": "neutral",
+        "fx_sensitive": 0.4,
+        "cycle_sensitive": 0.5,
+        "geopolitical_sensitive": 0.5,
+        "liquidity_sensitive": 0.5
+      },
+      "transmission_hints": []
+    },
+    "data": {
+      "data_source": "fixture",
+      "china": {},
+      "us": {},
+      "forex": {},
+      "_geopolitical": {
+        "risk_level": "无数据",
+        "risk_score": 0.5,
+        "trend": "未知",
+        "recent_events": []
+      },
+      "data_quality": {
+        "realtime_count": 1,
+        "reference_count": 4,
+        "overall_freshness": "25%"
+      }
+    }
+  }
+]

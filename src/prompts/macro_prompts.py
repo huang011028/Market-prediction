@@ -214,26 +214,26 @@ MACRO_ASSESSMENT_PROMPT = """你是一个宏观经济学家。请基于以下数
 # 宏观→标的传导提示词（CoT Step 2）
 # ================================================================
 
-MACRO_TRANSMISSION_PROMPT = f"""你是宏观策略分析师。请将宏观环境评估结果**精确翻译**为对具体标的的影响。
+MACRO_TRANSMISSION_PROMPT = """你是宏观策略分析师。请将宏观环境评估结果**精确翻译**为对具体标的的影响。
 
 ## 标的宏观上下文
-{{stock_context}}
+{stock_context}
 
 ## 宏观环境评估
-{{macro_assessment}}
+{macro_assessment}
 
 ## 宏观数据
-{{macro_data}}
+{macro_data}
 
 ## 市场特色
-{{market_appendix}}
+{market_appendix}
 
 ## 任务
 1. 为每个宏观因子构建对该标的的**传导链**（macro factor → sector sensitivity → specific impact）
 2. 量化评估：正负因子分别贡献了多少？综合方向是什么？
 3. 给出最终的 direction + magnitude + confidence
 
-{CONFIDENCE_ANCHORS_MACRO}
+""" + CONFIDENCE_ANCHORS_MACRO + """
 
 ## 输出格式
 ```json

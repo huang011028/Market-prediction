@@ -130,7 +130,7 @@ def test_recent_trend_shape():
     trend = build_recent_trend(make_price_df(), points=30)
 
     assert len(trend) == 30
-    assert {"date", "close", "volume", "change_pct"} <= set(trend[0])
+    assert {"date", "open", "high", "low", "close", "volume", "change_pct", "daily_change_pct"} <= set(trend[0])
 
 
 def test_intraday_signals_detect_strong_up():
@@ -232,8 +232,20 @@ def test_technical_prompt_uses_snapshot_contract():
 
     assert "技术证据包" in prompt
     assert "不得编造未提供的价格" in prompt
+    assert "decision_matrix" in prompt
+    assert "confidence_constraints" in prompt
     assert "support_resistance" in prompt
     assert "intraday_signals" in prompt
+
+    evidence = analyst._build_evidence_packet(data, "短期(1周)")
+    assert evidence["decision_matrix"]["suggested_direction"] in {"bullish", "bearish", "neutral"}
+    assert "max_confidence" in evidence["confidence_constraints"]
+    assert "support_resistance" in evidence
+    assert evidence["evidence"]["bullish"] or evidence["evidence"]["neutral"]
+
+    summary = analyst._build_data_summary(data)
+    assert summary["evidence"]["decision_matrix"]
+    assert summary["evidence"]["confidence_constraints"]["max_confidence"] >= 0
 
 
 def test_intraday_selloff_caps_bullish_confidence():

@@ -14,6 +14,7 @@ from src.core.result import AnalysisResult, Direction, Magnitude
 from src.core.confidence_calibrator import ConfidenceCalibrator
 from src.data.price_fetcher import PriceFetcher
 from src.data.stock_profiles import get_stock_profile, build_profile_context
+from src.prompts.dynamic_overrides import build_prompt_with_overrides
 from src.prompts.technical_prompts import TECHNICAL_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ class TechnicalAnalyst(BaseAgent):
         return "3mo"
 
     def _get_system_prompt(self) -> str:
-        return TECHNICAL_SYSTEM_PROMPT
+        return build_prompt_with_overrides(TECHNICAL_SYSTEM_PROMPT, self.name)
 
     # ================================================================
     # 🆕 Round1: 结构化信号摘要 + 更好的数据呈现
@@ -65,6 +66,11 @@ class TechnicalAnalyst(BaseAgent):
         parts.append(f"- 标的: {context.get('target', 'N/A')}")
         parts.append(f"- 周期: {context.get('timeframe', 'N/A')}")
         parts.append(f"- 数据范围: {data.get('data_period', 'N/A')} ({data.get('trading_days', '?')}个交易日)")
+        if context.get("prediction_target"):
+            parts.append("- 预测目标规格:")
+            parts.append("```json")
+            parts.append(json.dumps(context.get("prediction_target"), ensure_ascii=False, indent=2))
+            parts.append("```")
         parts.append("")
 
         # 价格概览
@@ -80,18 +86,10 @@ class TechnicalAnalyst(BaseAgent):
 
         snapshot = data.get("technical_snapshot", {}) or {}
         if snapshot:
-            evidence_payload = {
-                "data_quality": snapshot.get("data_quality", {}),
-                "trend_regime": snapshot.get("trend_regime", {}),
-                "momentum_signals": snapshot.get("momentum_signals", {}),
-                "volume_signals": snapshot.get("volume_signals", {}),
-                "volatility_signals": snapshot.get("volatility_signals", {}),
-                "support_resistance": snapshot.get("support_resistance", {}),
-                "risk_levels": snapshot.get("risk_levels", {}),
-                "intraday_signals": data.get("intraday_signals", {}),
-                "confidence_model": snapshot.get("confidence_model", {}),
-                "evidence": snapshot.get("evidence", {}),
-            }
+            evidence_payload = self._build_evidence_packet(
+                data,
+                context.get("timeframe", ""),
+            )
             parts.append("## 技术证据包（代码计算，不依赖 LLM）")
             parts.append("```json")
             parts.append(json.dumps(evidence_payload, ensure_ascii=False, indent=2))
@@ -178,6 +176,7 @@ class TechnicalAnalyst(BaseAgent):
         parts.append("- reasoning 第一段必须说明主导技术证据。")
         parts.append("- risks 必须至少包含一个技术判断失效条件。")
         parts.append("- 如果代码计算的 confidence_model 存在 hard_caps，不得给出高于 hard_caps 约束的强判断。")
+        parts.append("- 建议输出 prediction_target.expected_return_pct 与 P(涨/跌/中性)，方向需由收益目标派生。")
 
         # 🆕 Round2: 标的信息
         target = context.get("target", "")
@@ -247,6 +246,7 @@ class TechnicalAnalyst(BaseAgent):
 
     async def analyze(self, data: dict, context: dict) -> AnalysisResult:
         """分析 + 校准"""
+        technical_buckets = None
         dq = data.get("data_quality", {}) or {}
         if dq.get("status") == "failed" or float(dq.get("score", 1.0) or 0) < 0.4:
             reason = "技术面数据不足，不能形成有效技术判断。"
@@ -305,6 +305,33 @@ class TechnicalAnalyst(BaseAgent):
         except Exception as e:
             logger.debug(f"置信度校准失败: {e}")
 
+        # 用技术面专用历史桶再校准一次，让回测冷启动样本能直接影响实时预测。
+        try:
+            from src.utils.technical_calibrator import TechnicalConfidenceCalibrator
+
+            evidence_packet = self._build_evidence_packet(
+                data,
+                context.get("timeframe", "短期"),
+            )
+            buckets = TechnicalConfidenceCalibrator.extract_buckets_from_evidence(
+                evidence_packet,
+                context.get("timeframe", "短期"),
+            )
+            technical_buckets = buckets
+            dedicated_calibrator = TechnicalConfidenceCalibrator()
+            dedicated_conf = dedicated_calibrator.calibrate(
+                raw_confidence=result.confidence,
+                **buckets,
+            )
+            if abs(dedicated_conf - result.confidence) >= 0.02:
+                old_conf = result.confidence
+                result.confidence = dedicated_conf
+                result.reasoning += (
+                    f"\n\n[技术面历史桶校准: {old_conf:.0%}→{dedicated_conf:.0%}]"
+                )
+        except Exception as e:
+            logger.debug(f"技术面专用校准失败: {e}")
+
         # 校准幅度
         try:
             atr_pct = float(data.get("indicators", {}).get("ATR_pct", 2.0))
@@ -318,12 +345,172 @@ class TechnicalAnalyst(BaseAgent):
         except Exception as e:
             logger.debug(f"幅度校准失败: {e}")
 
-        self._apply_snapshot_constraints(result, data)
+        technical_issues = self._apply_snapshot_constraints(result, data)
+        if result.data_summary is None:
+            result.data_summary = {}
+        result.data_summary["consistency_issues"] = technical_issues
+        self._apply_holdout_direction_policy(
+            result,
+            data,
+            context,
+            technical_buckets,
+        )
+        self._apply_holdout_confidence_policy(
+            result,
+            data,
+            context,
+            technical_buckets,
+        )
 
         return result
 
+    def _apply_holdout_direction_policy(
+        self,
+        result: AnalysisResult,
+        data: dict,
+        context: dict,
+        technical_buckets: dict | None,
+    ) -> None:
+        """应用通过 holdout 验证的声明式技术方向规则。"""
+        try:
+            from src.utils.technical_calibrator import TechnicalConfidenceCalibrator
+
+            buckets = technical_buckets
+            if buckets is None:
+                evidence_packet = self._build_evidence_packet(
+                    data,
+                    context.get("timeframe", "短期"),
+                )
+                buckets = TechnicalConfidenceCalibrator.extract_buckets_from_evidence(
+                    evidence_packet,
+                    context.get("timeframe", "短期"),
+                )
+            current_direction = getattr(result.direction, "value", result.direction)
+            policy_direction, matched_rules = TechnicalConfidenceCalibrator.apply_direction_policy(
+                current_direction,
+                buckets,
+            )
+            if not matched_rules:
+                return
+            if policy_direction == current_direction:
+                result.data_summary = result.data_summary or {}
+                result.data_summary["technical_direction_policy"] = {
+                    "matched_rules": matched_rules,
+                    "applied": False,
+                    "direction": current_direction,
+                }
+                return
+
+            old_direction = current_direction
+            result.direction = Direction(policy_direction)
+            self._ensure_policy_magnitude(result, data, policy_direction)
+            old_confidence = result.confidence
+            result.confidence = min(0.60, max(float(result.confidence or 0.0), 0.50))
+            matched_labels = [
+                f"{rule.get('bucket_group')}/{rule.get('bucket')}->{rule.get('action')}"
+                for rule in matched_rules
+            ]
+            result.reasoning += (
+                "\n\n[技术面方向规则: "
+                f"{old_direction}->{policy_direction}; "
+                f"confidence {old_confidence:.0%}->{result.confidence:.0%}; "
+                + "; ".join(matched_labels)
+                + "]"
+            )
+            result.key_factors.append("命中 holdout 通过的技术场景方向规则")
+            result.risks.append("历史场景规则只代表样本多数方向，仍需结合新信息复核。")
+            result.data_summary = result.data_summary or {}
+            result.data_summary["technical_direction_policy"] = {
+                "matched_rules": matched_rules,
+                "applied": True,
+                "old_direction": old_direction,
+                "new_direction": policy_direction,
+                "old_confidence": round(old_confidence, 3),
+                "new_confidence": round(result.confidence, 3),
+            }
+        except Exception as e:
+            logger.debug(f"技术面 holdout 方向规则应用失败: {e}")
+
+    def _apply_holdout_confidence_policy(
+        self,
+        result: AnalysisResult,
+        data: dict,
+        context: dict,
+        technical_buckets: dict | None,
+    ) -> None:
+        """应用通过 holdout 验证的声明式技术置信度规则。"""
+        try:
+            from src.utils.technical_calibrator import TechnicalConfidenceCalibrator
+
+            buckets = technical_buckets
+            if buckets is None:
+                evidence_packet = self._build_evidence_packet(
+                    data,
+                    context.get("timeframe", "短期"),
+                )
+                buckets = TechnicalConfidenceCalibrator.extract_buckets_from_evidence(
+                    evidence_packet,
+                    context.get("timeframe", "短期"),
+                )
+            old_confidence = float(result.confidence or 0.0)
+            policy_confidence, matched_rules = (
+                TechnicalConfidenceCalibrator.apply_confidence_policy(
+                    old_confidence,
+                    buckets,
+                )
+            )
+            if not matched_rules:
+                return
+            result.data_summary = result.data_summary or {}
+            if policy_confidence >= old_confidence:
+                result.data_summary["technical_confidence_policy"] = {
+                    "matched_rules": matched_rules,
+                    "applied": False,
+                    "confidence": round(old_confidence, 3),
+                }
+                return
+
+            result.confidence = policy_confidence
+            matched_labels = [
+                f"{rule.get('bucket_group')}/{rule.get('bucket')}<= {rule.get('confidence_cap')}"
+                for rule in matched_rules
+            ]
+            result.reasoning += (
+                "\n\n[技术面置信度规则: "
+                f"confidence {old_confidence:.0%}->{result.confidence:.0%}; "
+                + "; ".join(matched_labels)
+                + "]"
+            )
+            result.key_factors.append("命中 holdout 通过的技术置信度封顶规则")
+            result.risks.append("历史低命中场景触发置信度封顶，方向判断需等待更多确认。")
+            result.data_summary["technical_confidence_policy"] = {
+                "matched_rules": matched_rules,
+                "applied": True,
+                "old_confidence": round(old_confidence, 3),
+                "new_confidence": round(result.confidence, 3),
+            }
+        except Exception as e:
+            logger.debug(f"技术面 holdout 置信度规则应用失败: {e}")
+
+    def _ensure_policy_magnitude(
+        self,
+        result: AnalysisResult,
+        data: dict,
+        direction: str,
+    ) -> None:
+        atr_pct = self._safe_float(data.get("indicators", {}).get("ATR_pct"), 2.0)
+        max_move = round(max(1.0, min(6.0, atr_pct * 2.0)), 2)
+        min_move = round(max(0.5, min(max_move, atr_pct * 0.5)), 2)
+        if direction == "bullish":
+            if result.magnitude is None or result.magnitude.max_pct <= 0:
+                result.magnitude = Magnitude(min_pct=min_move, max_pct=max_move)
+        elif direction == "bearish":
+            if result.magnitude is None or result.magnitude.min_pct >= 0:
+                result.magnitude = Magnitude(min_pct=-max_move, max_pct=-min_move)
+
     def _build_data_summary(self, data: dict) -> dict:
         snapshot = data.get("technical_snapshot", {}) or {}
+        evidence_packet = self._build_evidence_packet(data)
         return {
             "symbol": data.get("symbol"),
             "name": data.get("name"),
@@ -349,7 +536,147 @@ class TechnicalAnalyst(BaseAgent):
             "support_resistance": snapshot.get("support_resistance", {}),
             "risk_levels": snapshot.get("risk_levels", {}),
             "confidence_model": snapshot.get("confidence_model", {}),
+            "legacy_evidence": snapshot.get("evidence", {}),
+            "evidence": evidence_packet,
+        }
+
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            if value in (None, "", "N/A"):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _build_evidence_packet(self, data: dict, timeframe: str = "") -> dict:
+        """把 technical_snapshot 包装为统一结构化技术证据包。"""
+        snapshot = data.get("technical_snapshot", {}) or {}
+        confidence_model = snapshot.get("confidence_model", {}) or {}
+        decision_matrix = self._derive_technical_matrix(data, timeframe)
+        max_confidence = self._safe_float(
+            confidence_model.get("technical_confidence"), 0.0,
+        )
+        return {
+            "identity": {
+                "symbol": data.get("symbol"),
+                "name": data.get("name"),
+                "market": data.get("market"),
+                "data_source": "PriceFetcher",
+            },
+            "price_window": {
+                "data_period": data.get("data_period"),
+                "latest_date": data.get("latest_date") or snapshot.get("latest_date"),
+                "trading_days": data.get("trading_days", snapshot.get("trading_days", 0)),
+                "timeframe": timeframe,
+            },
+            "price_summary": data.get("price_summary", {}),
+            "close_series_summary": snapshot.get("close_series_summary", {}),
+            "data_quality": data.get("data_quality") or snapshot.get("data_quality", {}),
+            "trend_regime": snapshot.get("trend_regime", {}),
+            "momentum_signals": snapshot.get("momentum_signals", {}),
+            "volume_signals": snapshot.get("volume_signals", {}),
+            "volatility_signals": snapshot.get("volatility_signals", {}),
+            "support_resistance": snapshot.get("support_resistance", {}),
+            "risk_levels": snapshot.get("risk_levels", {}),
+            "intraday_signals": data.get("intraday_signals", {}),
+            "recent_trend": data.get("recent_trend", snapshot.get("recent_trend", [])),
+            "decision_matrix": decision_matrix,
+            "confidence_constraints": {
+                "max_confidence": round(max_confidence, 3),
+                "technical_confidence": round(max_confidence, 3),
+                "signal_consistency_score": confidence_model.get("signal_consistency_score"),
+                "risk_reward_score": confidence_model.get("risk_reward_score"),
+                "backtest_prior_score": confidence_model.get("backtest_prior_score"),
+                "hard_caps": confidence_model.get("hard_caps", []) or [],
+            },
             "evidence": snapshot.get("evidence", {}),
+        }
+
+    def _derive_technical_matrix(self, data: dict, timeframe: str = "") -> dict:
+        """生成技术趋势-动量-量能-风险收益矩阵，供 Aggregator 消费。"""
+        snapshot = data.get("technical_snapshot", {}) or {}
+        confidence_model = snapshot.get("confidence_model", {}) or {}
+        trend = snapshot.get("trend_regime", {}) or {}
+        momentum = snapshot.get("momentum_signals", {}) or {}
+        volume = snapshot.get("volume_signals", {}) or {}
+        risk = snapshot.get("risk_levels", {}) or {}
+        support_resistance = snapshot.get("support_resistance", {}) or {}
+        intraday = data.get("intraday_signals", {}) or {}
+
+        short_trend = trend.get("short_term", "unknown")
+        medium_trend = trend.get("medium_term", "unknown")
+        momentum_state = momentum.get("state", "mixed")
+        volume_state = "neutral"
+        if volume.get("price_up_volume_up"):
+            volume_state = "confirm_up"
+        elif volume.get("price_down_volume_up"):
+            volume_state = "confirm_down"
+        elif volume.get("volume_trend") == "shrinking":
+            volume_state = "shrinking"
+
+        risk_reward = self._safe_float(risk.get("risk_reward_ratio"), None)
+        if risk_reward is None:
+            risk_bucket = "unknown"
+            risk_label = "风险收益未知"
+        elif risk_reward >= 1.5:
+            risk_bucket = "favorable"
+            risk_label = "风险收益占优"
+        elif risk_reward >= 1.0:
+            risk_bucket = "balanced"
+            risk_label = "风险收益均衡"
+        elif risk_reward >= 0.7:
+            risk_bucket = "weak"
+            risk_label = "风险收益偏弱"
+        else:
+            risk_bucket = "unfavorable"
+            risk_label = "风险收益不利"
+
+        intraday_state = intraday.get("state") if intraday.get("available") else "unavailable"
+        suggested_direction = confidence_model.get("suggested_direction", "neutral")
+        matrix_reason = "技术证据方向不明确，默认中性。"
+        if suggested_direction == "bullish":
+            matrix_reason = "趋势、动量或量能证据偏多。"
+        elif suggested_direction == "bearish":
+            matrix_reason = "趋势、动量或量能证据偏空。"
+
+        if intraday_state == "selloff" and suggested_direction == "bullish":
+            suggested_direction = "neutral"
+            matrix_reason = "日线偏多但盘中明显走弱，短线追多需降级。"
+        elif intraday_state == "strong_up" and suggested_direction == "bearish":
+            suggested_direction = "neutral"
+            matrix_reason = "日线偏空但盘中明显走强，短线追空需降级。"
+
+        if (
+            support_resistance.get("resistance_distance_pct") is not None
+            and 0 <= self._safe_float(support_resistance.get("resistance_distance_pct"), 99) <= 2
+            and suggested_direction == "bullish"
+            and not volume.get("price_up_volume_up")
+        ):
+            suggested_direction = "neutral"
+            matrix_reason = "接近压力位且未放量突破，看涨结论需要等待确认。"
+
+        if (
+            support_resistance.get("support_distance_pct") is not None
+            and -2 <= self._safe_float(support_resistance.get("support_distance_pct"), -99) <= 0
+            and suggested_direction == "bearish"
+        ):
+            suggested_direction = "neutral"
+            matrix_reason = "接近支撑位，看跌结论需要等待跌破确认。"
+
+        return {
+            "trend_bucket": short_trend,
+            "medium_trend_bucket": medium_trend,
+            "momentum_bucket": momentum_state,
+            "volume_bucket": volume_state,
+            "risk_reward_bucket": risk_bucket,
+            "risk_reward_label": risk_label,
+            "intraday_bucket": intraday_state,
+            "matrix_position": (
+                f"短线{short_trend}+动量{momentum_state}+量能{volume_state}+{risk_label}"
+            ),
+            "suggested_direction": suggested_direction,
+            "reason": matrix_reason,
         }
 
     def _has_signal_contradiction(self, ind: dict) -> bool:
@@ -371,11 +698,11 @@ class TechnicalAnalyst(BaseAgent):
             contradictions += 1
         return contradictions >= 2
 
-    def _apply_snapshot_constraints(self, result: AnalysisResult, data: dict) -> None:
+    def _apply_snapshot_constraints(self, result: AnalysisResult, data: dict) -> list[str]:
         """用代码证据包约束 LLM 输出，避免高置信度自由发挥。"""
         snapshot = data.get("technical_snapshot", {}) or {}
         if not snapshot:
-            return
+            return []
 
         confidence_model = snapshot.get("confidence_model", {}) or {}
         evidence = snapshot.get("evidence", {}) or {}
@@ -474,3 +801,4 @@ class TechnicalAnalyst(BaseAgent):
             for cap in caps[:3]:
                 if cap not in result.risks:
                     result.risks.append(cap)
+        return caps

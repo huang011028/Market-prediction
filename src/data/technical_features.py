@@ -54,6 +54,9 @@ def build_recent_trend(df: pd.DataFrame, points: int = 30) -> list[dict[str, Any
 
     for idx, row in sample.iterrows():
         close = float(row["close"])
+        open_price = float(row.get("open", close) or close)
+        high_price = float(row.get("high", max(open_price, close)) or max(open_price, close))
+        low_price = float(row.get("low", min(open_price, close)) or min(open_price, close))
         date_value = idx
         if isinstance(date_value, pd.Timestamp):
             date_str = date_value.date().isoformat()
@@ -63,11 +66,16 @@ def build_recent_trend(df: pd.DataFrame, points: int = 30) -> list[dict[str, Any
             date_str = str(date_value)[:10]
 
         change_from_start = ((close / first_close - 1) * 100) if first_close else 0.0
+        daily_change = ((close / open_price - 1) * 100) if open_price else 0.0
         trend.append({
             "date": date_str,
+            "open": round(open_price, 2),
+            "high": round(high_price, 2),
+            "low": round(low_price, 2),
             "close": round(close, 2),
             "volume": float(row.get("volume", 0) or 0),
             "change_pct": round(change_from_start, 2),
+            "daily_change_pct": round(daily_change, 2),
         })
     return trend
 

@@ -11,6 +11,16 @@ from enum import Enum
 import json
 from typing import Optional
 
+from src.core.prediction_target import PredictionTargetSpec, resolve_prediction_target
+
+STRUCTURED_EVIDENCE_DOMAINS = {
+    "近期股价分析师": "技术",
+    "公司前景分析师": "基本面",
+    "行业对比分析师": "行业",
+    "国际形势分析师": "宏观",
+    "最新新闻分析师": "新闻",
+}
+
 
 # ================================================================
 # 枚举定义
@@ -84,6 +94,7 @@ class AnalysisResult:
     direction: Direction = Direction.NEUTRAL
     magnitude: Magnitude | None = None
     confidence: float = 0.0  # 0.0 ~ 1.0
+    prediction_target: PredictionTargetSpec | None = None
 
     # --- 可解释性 ---
     reasoning: str = ""  # 推理过程（Markdown 格式）
@@ -95,6 +106,20 @@ class AnalysisResult:
     status: str = "ok"  # ok / degraded / failed
     error_message: Optional[str] = None
     data_quality_score: float = 1.0
+
+    def __post_init__(self):
+        if not isinstance(self.direction, Direction):
+            self.direction = Direction(str(self.direction or "neutral"))
+        if isinstance(self.magnitude, dict):
+            self.magnitude = Magnitude(**self.magnitude)
+        self.prediction_target = resolve_prediction_target(
+            self.timeframe,
+            self.direction,
+            self.magnitude,
+            self.confidence,
+            self.prediction_target,
+            target=self.target,
+        )
 
     def validate(self) -> list[str]:
         """校验结果完整性
@@ -141,6 +166,8 @@ class AnalysisResult:
         d["direction"] = self.direction.value
         if self.magnitude:
             d["magnitude"] = asdict(self.magnitude)
+        if self.prediction_target:
+            d["prediction_target"] = self.prediction_target.to_dict()
         return d
 
     def to_json(self, indent: int = 2) -> str:
@@ -159,6 +186,11 @@ class AnalysisResult:
         # 还原 Magnitude
         if data.get("magnitude"):
             data["magnitude"] = Magnitude(**data["magnitude"])
+
+        if data.get("prediction_target"):
+            data["prediction_target"] = PredictionTargetSpec.from_dict(
+                data["prediction_target"]
+            )
 
         return cls(**data)
 
@@ -186,6 +218,18 @@ class FinalReport:
     direction: Direction = Direction.NEUTRAL
     magnitude: Magnitude | None = None
     confidence: float = 0.0
+    prediction_target: PredictionTargetSpec | None = None
+    expected_excess_return_pct: Optional[float] = None
+    expected_return_p10: Optional[float] = None
+    expected_return_p50: Optional[float] = None
+    expected_return_p90: Optional[float] = None
+    prob_up: Optional[float] = None
+    prob_down: Optional[float] = None
+    prob_no_edge: Optional[float] = None
+    decision: str = "observe"
+    no_trade_reason: str = ""
+    neutral_reason: str = ""
+    edge_score: Optional[float] = None
 
     # --- 各 Agent 结果 ---
     agent_results: list[AnalysisResult] = field(default_factory=list)
@@ -194,6 +238,50 @@ class FinalReport:
     summary: str = ""  # 综合分析文字
     key_risks: list[str] = field(default_factory=list)
     disagreements: list[str] = field(default_factory=list)  # Agent 间分歧点
+
+    def __post_init__(self):
+        if not isinstance(self.direction, Direction):
+            self.direction = Direction(str(self.direction or "neutral"))
+        if isinstance(self.magnitude, dict):
+            self.magnitude = Magnitude(**self.magnitude)
+        self.prediction_target = resolve_prediction_target(
+            self.timeframe,
+            self.direction,
+            self.magnitude,
+            self.confidence,
+            self.prediction_target,
+            target=self.target,
+        )
+        self._sync_distribution_fields()
+
+    def _sync_distribution_fields(self) -> None:
+        """从 prediction_target 补齐最终收益分布字段。"""
+        pt = self.prediction_target
+        if pt is None:
+            return
+        if self.expected_excess_return_pct is None:
+            self.expected_excess_return_pct = pt.expected_return_pct
+        if self.expected_return_p10 is None:
+            self.expected_return_p10 = pt.expected_return_p10
+        if self.expected_return_p50 is None:
+            self.expected_return_p50 = pt.expected_return_p50 or pt.expected_return_pct
+        if self.expected_return_p90 is None:
+            self.expected_return_p90 = pt.expected_return_p90
+        if self.prob_up is None:
+            self.prob_up = pt.prob_up
+        if self.prob_down is None:
+            self.prob_down = pt.prob_down
+        if self.prob_no_edge is None:
+            self.prob_no_edge = pt.prob_neutral
+        if self.edge_score is None:
+            expected = abs(float(self.expected_excess_return_pct or 0.0))
+            threshold = max(abs(float(pt.up_threshold_pct or 0.0)), abs(float(pt.down_threshold_pct or 0.0)), 1.0)
+            directional_edge = max(float(self.prob_up or 0.0), float(self.prob_down or 0.0))
+            self.edge_score = round(min(1.0, (expected / threshold) * directional_edge), 4)
+        if not self.decision:
+            self.decision = "observe"
+        if self.direction == Direction.NEUTRAL and not self.neutral_reason:
+            self.neutral_reason = self.no_trade_reason or "no_edge"
 
     def to_markdown(self) -> str:
         """生成 Markdown 格式的最终报告（Phase 1+ 完整实现）"""
@@ -215,6 +303,31 @@ class FinalReport:
         if self.magnitude:
             lines.append(f"- **幅度区间**: {self.magnitude.range_str}")
         lines.append(f"- **综合置信度**: {self.confidence:.0%}")
+        lines.append(f"- **决策边际**: {self.decision} | edge={self.edge_score if self.edge_score is not None else 'N/A'}")
+        if self.no_trade_reason:
+            lines.append(f"- **无交易/观望原因**: {self.no_trade_reason}")
+        if self.neutral_reason:
+            lines.append(f"- **中性细分原因**: {self.neutral_reason}")
+        if self.prediction_target:
+            pt = self.prediction_target
+            lines.append(
+                f"- **目标规格**: {pt.horizon} / {pt.evaluation_mode} / "
+                f"{pt.target_type}"
+            )
+            lines.append(
+                f"- **收益目标**: 预期 {pt.expected_return_pct:+.1f}% | "
+                f"上障碍 {pt.up_threshold_pct:+.1f}% | 下障碍 {pt.down_threshold_pct:+.1f}%"
+            )
+            lines.append(
+                f"- **收益分布**: P涨 {self.prob_up or 0:.0%} | "
+                f"P跌 {self.prob_down or 0:.0%} | P无边际 {self.prob_no_edge or 0:.0%}"
+            )
+            if self.expected_return_p10 is not None and self.expected_return_p90 is not None:
+                lines.append(
+                    f"- **残差收益区间**: P10 {self.expected_return_p10:+.1f}% | "
+                    f"P50 {(self.expected_return_p50 or 0):+.1f}% | "
+                    f"P90 {self.expected_return_p90:+.1f}%"
+                )
 
         # 🆕 Phase 2: 各 Agent 置信度一览
         if self.agent_results:
@@ -232,6 +345,64 @@ class FinalReport:
                     f"| {r.agent_name} | {dir_label} {r.direction.value} | {mag} | **{r.confidence:.0%}** | {qual} |"
                 )
             lines.append("")
+
+            lines.append("### 预测目标与概率")
+            lines.append("")
+            lines.append("| 分析师 | Horizon | 目标类型 | 预期收益 | P(涨) | P(跌) | P(中性) |")
+            lines.append("|--------|---------|----------|---------:|------:|------:|--------:|")
+            for r in self.agent_results:
+                pt = r.prediction_target or resolve_prediction_target(
+                    r.timeframe, r.direction, r.magnitude, r.confidence,
+                    target=r.target,
+                )
+                lines.append(
+                    f"| {r.agent_name} | {pt.horizon} | {pt.target_type} "
+                    f"| {pt.expected_return_pct:+.1f}% "
+                    f"| {pt.prob_up:.0%} | {pt.prob_down:.0%} | {pt.prob_neutral:.0%} |"
+                )
+            lines.append("")
+
+            fundamental_evidence = [
+                summary for summary in (
+                    self._fundamental_evidence_summary(r) for r in self.agent_results
+                ) if summary
+            ]
+            if fundamental_evidence:
+                lines.append("### 公司前景证据摘要")
+                lines.append("")
+                lines.append("| 矩阵 | 建议方向 | 质量评分 | PE分位 | 价值陷阱 | 置信上限 |")
+                lines.append("|------|----------|----------|--------|----------|----------|")
+                for item in fundamental_evidence:
+                    trap = "是" if item.get("is_value_trap") else "否"
+                    lines.append(
+                        f"| {item.get('matrix_position', 'N/A')} "
+                        f"| {item.get('suggested_direction', 'neutral')} "
+                        f"| {self._format_ratio(item.get('quality_score'))} "
+                        f"| {self._format_ratio(item.get('pe_percentile'))} "
+                        f"| {trap} | {self._format_ratio(item.get('max_confidence'))} |"
+                    )
+                lines.append("")
+
+            structured_evidence = [
+                summary for summary in (
+                    self._structured_evidence_summary(r) for r in self.agent_results
+                ) if summary
+            ]
+            if structured_evidence:
+                lines.append("### 结构化证据摘要")
+                lines.append("")
+                lines.append("| 分析师 | 领域 | 矩阵 | 建议方向 | 质量评分 | 置信上限 |")
+                lines.append("|--------|------|------|----------|----------|----------|")
+                for item in structured_evidence:
+                    lines.append(
+                        f"| {item.get('agent', 'N/A')} "
+                        f"| {item.get('domain', '通用')} "
+                        f"| {item.get('matrix_position', 'N/A')} "
+                        f"| {item.get('suggested_direction', 'neutral')} "
+                        f"| {self._format_ratio(item.get('quality_score'))} "
+                        f"| {self._format_ratio(item.get('max_confidence'))} |"
+                    )
+                lines.append("")
 
         if self.summary:
             lines.append("")
@@ -266,6 +437,133 @@ class FinalReport:
             return "⚠️ 数据一般"
         return "✅ 正常"
 
+    @staticmethod
+    def _safe_float(value, default=None):
+        try:
+            if value in (None, "", "N/A"):
+                return default
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped.endswith("%"):
+                    return float(stripped[:-1]) / 100
+                value = stripped
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _format_ratio(value) -> str:
+        value = FinalReport._safe_float(value, None)
+        if value is None:
+            return "N/A"
+        return f"{value:.0%}" if abs(value) <= 1 else f"{value:.0f}"
+
+    @staticmethod
+    def _fundamental_evidence_summary(result: AnalysisResult) -> dict:
+        summary = result.data_summary or {}
+        if not isinstance(summary, dict):
+            return {}
+
+        packet = summary.get("evidence", {})
+        if not isinstance(packet, dict):
+            packet = {}
+
+        matrix = packet.get("decision_matrix") or summary.get("decision_matrix") or {}
+        if result.agent_name != "公司前景分析师" and not matrix:
+            return {}
+
+        confidence = (
+            packet.get("confidence_constraints")
+            or packet.get("confidence_model")
+            or summary.get("confidence_constraints")
+            or {}
+        )
+        data_quality = packet.get("data_quality") or summary.get("data_quality") or {}
+        valuation = packet.get("valuation_analysis") or summary.get("valuation_analysis") or {}
+        trap = packet.get("value_trap_analysis") or summary.get("value_trap_analysis") or {}
+
+        return {
+            "agent": result.agent_name,
+            "matrix_position": matrix.get("matrix_position"),
+            "suggested_direction": matrix.get("suggested_direction"),
+            "quality_score": FinalReport._safe_float(
+                data_quality.get("overall_quality"),
+                FinalReport._safe_float(summary.get("quality"), None),
+            ),
+            "pe_percentile": FinalReport._safe_float(
+                valuation.get("pe_percentile_3yr"), None,
+            ),
+            "is_value_trap": bool(trap.get("is_trap")),
+            "max_confidence": FinalReport._safe_float(
+                confidence.get("max_confidence"),
+                FinalReport._safe_float(confidence.get("ceiling"), None),
+            ),
+            "hard_caps": confidence.get("hard_caps", []) or [],
+            "consistency_issues": summary.get("consistency_issues", []) or [],
+        }
+
+    @staticmethod
+    def _structured_evidence_summary(result: AnalysisResult) -> dict:
+        summary = result.data_summary or {}
+        if not isinstance(summary, dict):
+            return {}
+
+        packet = summary.get("evidence", {})
+        if not isinstance(packet, dict):
+            packet = {}
+
+        matrix = packet.get("decision_matrix") or summary.get("decision_matrix") or {}
+        confidence = (
+            packet.get("confidence_constraints")
+            or packet.get("confidence_model")
+            or summary.get("confidence_constraints")
+            or {}
+        )
+        evidence_lists = packet.get("evidence") or {}
+        if not (matrix or confidence or evidence_lists):
+            return {}
+
+        data_quality = (
+            packet.get("data_quality")
+            or packet.get("source_quality")
+            or summary.get("data_quality")
+            or {}
+        )
+
+        quality_score = FinalReport._safe_float(
+            data_quality.get("overall_quality"),
+            FinalReport._safe_float(
+                data_quality.get("overall"),
+                FinalReport._safe_float(
+                    data_quality.get("overall_freshness"),
+                    FinalReport._safe_float(
+                        data_quality.get("quality_score"),
+                        FinalReport._safe_float(
+                            data_quality.get("score"),
+                            FinalReport._safe_float(summary.get("quality"), None),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        return {
+            "agent": result.agent_name,
+            "domain": STRUCTURED_EVIDENCE_DOMAINS.get(result.agent_name, "通用"),
+            "matrix_position": matrix.get("matrix_position"),
+            "suggested_direction": matrix.get("suggested_direction"),
+            "quality_score": quality_score,
+            "max_confidence": FinalReport._safe_float(
+                confidence.get("max_confidence"),
+                FinalReport._safe_float(confidence.get("ceiling"), None),
+            ),
+            "hard_caps": confidence.get("hard_caps", []) or [],
+            "consistency_issues": summary.get("consistency_issues", []) or [],
+            "bullish_evidence": evidence_lists.get("bullish", []) or [],
+            "bearish_evidence": evidence_lists.get("bearish", []) or [],
+            "neutral_evidence": evidence_lists.get("neutral", []) or [],
+        }
+
     def to_dict(self) -> dict:
         """序列化为字典"""
         return {
@@ -275,10 +573,36 @@ class FinalReport:
             "direction": self.direction.value,
             "magnitude": asdict(self.magnitude) if self.magnitude else None,
             "confidence": self.confidence,
+            "prediction_target": (
+                self.prediction_target.to_dict() if self.prediction_target else None
+            ),
+            "expected_excess_return_pct": self.expected_excess_return_pct,
+            "expected_return_p10": self.expected_return_p10,
+            "expected_return_p50": self.expected_return_p50,
+            "expected_return_p90": self.expected_return_p90,
+            "prob_up": self.prob_up,
+            "prob_down": self.prob_down,
+            "prob_no_edge": self.prob_no_edge,
+            "decision": self.decision,
+            "no_trade_reason": self.no_trade_reason,
+            "neutral_reason": self.neutral_reason,
+            "edge_score": self.edge_score,
             "agent_results": [r.to_dict() for r in self.agent_results],
             "summary": self.summary,
             "key_risks": self.key_risks,
             "disagreements": self.disagreements,
+            "fundamental_evidence": [
+                summary for summary in (
+                    self._fundamental_evidence_summary(r)
+                    for r in self.agent_results
+                ) if summary
+            ],
+            "structured_evidence": [
+                summary for summary in (
+                    self._structured_evidence_summary(r)
+                    for r in self.agent_results
+                ) if summary
+            ],
         }
 
     def to_json(self, indent: int = 2) -> str:

@@ -31,6 +31,8 @@ class EvidenceMaintenanceReport:
     queue_before: dict
     queue_after: dict
     verified_count: int
+    attempted_count: int = 0
+    retry_scheduled_count: int = 0
     collection: Optional[dict] = None
     errors: list[str] = field(default_factory=list)
 
@@ -58,11 +60,15 @@ class EvidenceMaintenanceRunner:
         queue_before = self.prediction_store.get_verification_queue_status()
         errors: list[str] = []
         verified_count = 0
+        attempted_count = 0
+        retry_scheduled_count = 0
         collection = None
 
         try:
             result = await asyncio.to_thread(self.prediction_store.verify_all)
             verified_count = int(result.get("verified") or 0)
+            attempted_count = int(result.get("attempted") or 0)
+            retry_scheduled_count = int(result.get("retry_scheduled") or 0)
         except Exception as exc:
             errors.append(f"到期验证失败: {exc}")
 
@@ -90,6 +96,8 @@ class EvidenceMaintenanceRunner:
             queue_before=queue_before,
             queue_after=self.prediction_store.get_verification_queue_status(),
             verified_count=verified_count,
+            attempted_count=attempted_count,
+            retry_scheduled_count=retry_scheduled_count,
             collection=collection,
             errors=errors,
         )

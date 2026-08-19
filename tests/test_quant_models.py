@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from src.core.quant_calibration import MulticlassProbabilityCalibrator
+from src.core.experiment_ledger import ExperimentLedger
 from src.core.quant_models import create_quant_model, dependency_status
 from src.core.quant_models import QuantPrediction
 from src.core.quant_stacking import ConstrainedIndustryStacker
@@ -89,9 +90,38 @@ def test_walk_forward_keeps_lockbox_and_compares_benchmarks(tmp_path):
     assert report.lockbox["status"] == "locked"
     assert "empirical_prior" in report.aggregate_metrics
     assert "ridge" in report.aggregate_metrics
+    assert report.promotion_gate["global_trial_count_before"] == 0
     if dependency_status()["lightgbm"]["available"]:
         assert "lightgbm" in report.aggregate_metrics
         assert any(key.endswith("lightgbm_oof") for key in report.artifact_paths)
+
+
+def test_walk_forward_counts_prior_trials_globally(tmp_path):
+    if not dependency_status()["sklearn"]["available"]:
+        pytest.skip("scikit-learn not installed")
+    store = QuantFeatureStore(tmp_path / "features.db")
+    for item in _rows(days=120, symbols=5):
+        store.save(QuantFeatureRow(
+            market="A", symbol=item["symbol"], as_of=item["as_of"], horizon="5d",
+            features=item["features"], source_kind="historical_replay",
+            label_direction=item["label_direction"],
+            label_return_pct=item["label_return_pct"], label_threshold_pct=1.5,
+            lineage={"point_in_time_verified": True, "source_timestamps": [item["as_of"]]},
+        ))
+    ledger = ExperimentLedger(tmp_path / "global_ledger.db")
+    evaluator = QuantWalkForwardEvaluator(store, ledger=ledger)
+    config = WalkForwardConfig(
+        model_names=["ridge"], train_days=35, validation_days=15, test_days=15,
+        purge_days=5, lockbox_days=15, min_train_samples=80,
+        min_validation_samples=30, min_test_samples=30, min_unique_train_dates=15,
+    )
+
+    first = evaluator.run(config, tmp_path / "experiment_a" / "walk_forward")
+    second = evaluator.run(config, tmp_path / "experiment_b" / "walk_forward")
+
+    assert first.promotion_gate["global_trial_count_before"] == 0
+    assert second.promotion_gate["global_trial_count_before"] == 1
+    assert ledger.status()["total_trials"] == 2
 
 
 def test_walk_forward_reports_feature_family_ablation(tmp_path):

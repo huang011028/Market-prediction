@@ -20,7 +20,7 @@ class DummyStore:
 
     def verify_all(self):
         self.verified = True
-        return {"verified": 1}
+        return {"verified": 1, "attempted": 1, "retry_scheduled": 0}
 
     def get_recent_targets(self, limit=50):
         return []
@@ -35,5 +35,6 @@ async def test_evidence_maintenance_verifies_due_predictions(monkeypatch):
     report = await runner.run_once(EvidenceMaintenanceConfig())
 
     assert report.verified_count == 1
+    assert report.attempted_count == 1
     assert report.queue_before["overdue"] == 1
     assert report.queue_after["overdue"] == 0

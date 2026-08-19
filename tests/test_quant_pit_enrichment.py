@@ -1,9 +1,12 @@
 from src.data.quant_pit_enrichment import (
     AnnouncementEvent,
     FundamentalEvent,
+    FactorEvent,
     IndustryMembership,
     PerformanceEvent,
     QuantPitEnrichmentStore,
+    QuantPitRefreshConfig,
+    _fetch_consensus_factor_events,
 )
 
 
@@ -137,3 +140,95 @@ def test_flash_can_fill_pit_fundamental_fields_before_formal_statement(tmp_path)
     assert features["fundamental__high_quality"] == 1
     assert lineage["fundamental"] is None
     assert lineage["performance"]["event_kind"] == "flash"
+
+
+def test_financial_quality_and_consensus_are_strictly_point_in_time(tmp_path):
+    store = QuantPitEnrichmentStore(tmp_path / "pit.db")
+    store.upsert_factor_events([
+        FactorEvent(
+            "A", "000001", "balance_sheet", "2025-04-25", "2025-03-31",
+            {"total_assets": 1000, "total_liabilities": 600, "total_equity": 400,
+             "share_capital": 100},
+        ),
+        FactorEvent(
+            "A", "000001", "cash_flow", "2025-04-25", "2025-03-31",
+            {"operating_cash_flow": 80, "capex_cash_paid": 20, "net_profit": 50},
+        ),
+        FactorEvent(
+            "A", "000001", "consensus_report", "2025-03-01", "2025-12-31",
+            {"eps_by_year": {"2025": 1.0, "2026": 1.2}, "organization": "机构甲",
+             "rating_score": 1.0}, source_ref="report-1",
+        ),
+        FactorEvent(
+            "A", "000001", "consensus_report", "2025-04-01", "2025-12-31",
+            {"eps_by_year": {"2025": 1.1, "2026": 1.3}, "organization": "机构乙",
+             "rating_score": 0.75}, source_ref="report-2",
+        ),
+    ])
+
+    before, _ = store.features_as_of("000001", "2025-04-24")
+    after, lineage = store.features_as_of("000001", "2025-04-26")
+
+    assert before["balance__available"] == 0
+    assert before["consensus__available"] == 1
+    assert after["balance__leverage_ratio"] == 0.6
+    assert after["cashflow__free_cash_flow"] == 60.0
+    assert after["cashflow__cash_conversion_ratio"] == 1.6
+    assert after["cashflow__accrual_ratio"] == -0.03
+    assert after["consensus__eps_current_year_median"] == 1.05
+    assert after["consensus__eps_next_year_median"] == 1.25
+    assert lineage["cash_flow"]["effective_date"] == "2025-04-25"
+    assert lineage["consensus"]["forecast_year_mapping"] == "publication_year_relative"
+
+
+def test_consensus_annual_surprise_uses_only_reports_before_result(tmp_path):
+    store = QuantPitEnrichmentStore(tmp_path / "pit.db")
+    store.upsert_factor_events([
+        FactorEvent(
+            "A", "000001", "consensus_report", "2025-02-01", "2024-12-31",
+            {"eps_by_year": {"2024": 1.0}, "organization": "机构甲"}, source_ref="before",
+        ),
+        FactorEvent(
+            "A", "000001", "consensus_report", "2025-04-26", "2025-12-31",
+            {"eps_by_year": {"2024": 1.3}, "organization": "机构乙"}, source_ref="after",
+        ),
+    ])
+    store.upsert_fundamentals([
+        FundamentalEvent(
+            "A", "000001", "2025-04-25", "2024-12-31", {"basic_eps": 1.2},
+        ),
+    ])
+
+    features, _ = store.features_as_of("000001", "2025-04-28")
+
+    assert features["consensus__annual_eps_expected"] == 1.0
+    assert features["consensus__annual_eps_surprise_pct"] == 20.0
+    assert features["consensus__annual_surprise_reports"] == 1
+
+
+def test_raw_consensus_maps_forecasts_relative_to_publication_year(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "TotalPage": 1,
+                "data": [{
+                    "publishDate": "2024-07-05", "infoCode": "r1", "orgSName": "机构甲",
+                    "emRatingName": "买入", "predictThisYearEps": 2.6,
+                    "predictNextYearEps": 3.0, "predictNextTwoYearEps": 3.4,
+                }],
+            }
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: Response())
+    events = _fetch_consensus_factor_events(
+        "000001",
+        QuantPitRefreshConfig(
+            ["000001"], "2024-01-01", "2024-12-31",
+            include_fundamental=False, include_performance=False,
+            include_announcements=False, include_industry=False,
+        ),
+    )
+
+    assert events[0].features["eps_by_year"] == {"2024": 2.6, "2025": 3.0, "2026": 3.4}

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.data.quant_feature_store import QuantFeatureRow, QuantFeatureStore
+from src.data.quant_feature_store import FEATURE_SCHEMA_VERSION, QuantFeatureRow, QuantFeatureStore
 
 
 def test_current_capture_cannot_be_backdated(tmp_path):
@@ -153,17 +153,17 @@ def test_rows_filter_feature_version_and_merge_derived_features(tmp_path):
     store.save(old)
     store.save(current)
 
-    rows = store.rows(feature_version="quant_features.v3")
+    rows = store.rows(feature_version=FEATURE_SCHEMA_VERSION)
     assert [row["feature_id"] for row in rows] == [current.feature_id]
     assert store.update_features(
         current.feature_id,
         {"industry__return_20d_rank": 0.75},
         lineage_updates={"cross_section": "same_as_of_only"},
     )
-    updated = store.rows(feature_version="quant_features.v3")[0]
+    updated = store.rows(feature_version=FEATURE_SCHEMA_VERSION)[0]
     assert updated["features"]["industry__return_20d_rank"] == 0.75
     assert updated["lineage"]["derived_features"]["cross_section"] == "same_as_of_only"
     status = store.status()
     assert status["total"] == 2
-    assert status["active_version"]["feature_version"] == "quant_features.v3"
+    assert status["active_version"]["feature_version"] == FEATURE_SCHEMA_VERSION
     assert status["active_version"]["total"] == 1

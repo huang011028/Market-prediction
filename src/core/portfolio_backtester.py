@@ -51,6 +51,20 @@ class PortfolioBacktestConfig:
     min_avg_traded_value: float = 0.0
     max_participation_rate: float = 0.05
     impact_coefficient_bps: float = 15.0
+    policy_id: str = ""
+    policy_role: str = "diagnostic"
+    pre_registered: bool = False
+    selection_source: str = "ad_hoc"
+    bootstrap_iterations: int = 500
+    bootstrap_block_size: int = 4
+    bootstrap_seed: int = 20260715
+    min_independent_dates: int = 30
+    min_invested_dates: int = 20
+    min_position_selections: int = 50
+    max_top5_profit_concentration: float = 0.60
+    min_regime_periods: int = 5
+    max_regime_loss_pct: float = 10.0
+    market_regime_threshold_pct: float = 1.0
 
 
 @dataclass
@@ -68,6 +82,10 @@ class PortfolioPeriod:
     equity: float
     drawdown_pct: float
     holdings: list[dict] = field(default_factory=list)
+    avg_traded_value: float = 0.0
+    market_regime: str = "unknown"
+    volatility_regime: str = "unknown"
+    liquidity_regime: str = "unknown"
 
 
 @dataclass
@@ -78,6 +96,10 @@ class PortfolioBacktestReport:
     metrics: dict
     benchmark_metrics: dict
     excess_metrics: dict
+    policy: dict
+    significance: dict
+    regime_analysis: dict
+    promotion_gate: dict
     periods: list[PortfolioPeriod]
     warnings: list[str]
     input_rows: int
@@ -183,6 +205,7 @@ class PortfolioBacktester:
                     "expected_return_pct": row.get("expected_return_pct"),
                     "actual_return_pct": actual,
                     "direction": row.get("direction"),
+                    "avg_traded_value_20d": row.get("avg_traded_value_20d"),
                 })
             net_pct = gross_pct - cost_pct
             equity *= 1.0 + net_pct / 100.0
@@ -202,8 +225,15 @@ class PortfolioBacktester:
                 equity=round(equity, 2),
                 drawdown_pct=round(drawdown, 6),
                 holdings=holdings,
+                avg_traded_value=round(float(np.mean([
+                    float(item.get("avg_traded_value_20d") or 0.0)
+                    for item in holdings
+                    if float(item.get("avg_traded_value_20d") or 0.0) > 0
+                ])) if any(float(item.get("avg_traded_value_20d") or 0.0) > 0 for item in holdings) else 0.0, 2),
             ))
             previous_weights = weights
+
+        _assign_period_regimes(periods, config.market_regime_threshold_pct)
 
         net_returns = [period.net_return_pct / 100.0 for period in periods]
         benchmark_returns = [period.benchmark_return_pct / 100.0 for period in periods]
@@ -221,6 +251,32 @@ class PortfolioBacktester:
         excess_metrics = _return_metrics(excess_returns, config.horizon_trading_days)
         excess_metrics["information_ratio"] = excess_metrics.pop("sharpe")
         excess_metrics.pop("sortino", None)
+        significance = _portfolio_significance(
+            periods,
+            iterations=config.bootstrap_iterations,
+            block_size=config.bootstrap_block_size,
+            seed=config.bootstrap_seed,
+        )
+        regime_analysis = _regime_analysis(periods, config.horizon_trading_days)
+        policy = {
+            "policy_id": config.policy_id,
+            "role": config.policy_role,
+            "pre_registered": bool(config.pre_registered),
+            "selection_source": config.selection_source,
+            "edge_threshold": float(config.min_edge_score),
+            "promotion_eligible": bool(
+                config.pre_registered
+                and config.policy_role == "production_candidate"
+                and config.policy_id
+            ),
+        }
+        promotion_gate = _portfolio_promotion_gate(
+            periods,
+            significance,
+            regime_analysis,
+            config,
+            policy,
+        )
         warnings = [rules.price_limit_note]
         if config.allow_short and not rules.can_short:
             warnings.append(f"{rules.market} 市场配置不允许做空，bottom_k 已忽略")
@@ -244,6 +300,10 @@ class PortfolioBacktester:
             metrics=metrics,
             benchmark_metrics=benchmark_metrics,
             excess_metrics=excess_metrics,
+            policy=policy,
+            significance=significance,
+            regime_analysis=regime_analysis,
+            promotion_gate=promotion_gate,
             periods=periods,
             warnings=warnings,
             input_rows=len(rows),
@@ -270,6 +330,8 @@ class PortfolioBacktester:
                 "periods": len(periods),
                 "net_return_pct": metrics.get("total_return_pct"),
                 "excess_return_pct": excess_metrics.get("total_return_pct"),
+                "portfolio_should_promote": promotion_gate.get("should_promote", False),
+                "bootstrap_excess_ci_low_pct": significance.get("excess_total_return_ci_low_pct"),
             },
             project_root=Path(__file__).resolve().parents[2],
         )
@@ -439,4 +501,181 @@ def _return_metrics(returns: list[float], horizon: int) -> dict[str, float]:
         "sortino": round(sortino, 6),
         "win_rate": round(float(np.mean(values > 0)), 6),
         "volatility_pct": round(std * math.sqrt(periods_per_year) * 100, 6),
+    }
+
+
+def _assign_period_regimes(periods: list[PortfolioPeriod], threshold_pct: float) -> None:
+    if not periods:
+        return
+    absolute_benchmark = np.asarray(
+        [abs(period.benchmark_return_pct) for period in periods], dtype=float,
+    )
+    volatility_cut = float(np.median(absolute_benchmark))
+    liquidity_values = np.asarray(
+        [period.avg_traded_value for period in periods if period.avg_traded_value > 0],
+        dtype=float,
+    )
+    liquidity_cut = float(np.quantile(liquidity_values, 0.25)) if len(liquidity_values) else 0.0
+    for period in periods:
+        if period.benchmark_return_pct > threshold_pct:
+            period.market_regime = "bull"
+        elif period.benchmark_return_pct < -threshold_pct:
+            period.market_regime = "bear"
+        else:
+            period.market_regime = "sideways"
+        period.volatility_regime = (
+            "high_volatility"
+            if abs(period.benchmark_return_pct) >= volatility_cut and volatility_cut > 0
+            else "normal_volatility"
+        )
+        period.liquidity_regime = (
+            "liquidity_contraction"
+            if period.avg_traded_value > 0
+            and liquidity_cut > 0
+            and period.avg_traded_value <= liquidity_cut
+            else "normal_liquidity"
+        )
+
+
+def _portfolio_significance(
+    periods: list[PortfolioPeriod],
+    *,
+    iterations: int,
+    block_size: int,
+    seed: int,
+) -> dict[str, Any]:
+    excess = np.asarray([
+        (period.net_return_pct - period.benchmark_return_pct) / 100.0
+        for period in periods
+    ], dtype=float)
+    positive = sorted(
+        (max(0.0, period.net_return_pct) for period in periods), reverse=True,
+    )
+    positive_total = float(sum(positive))
+    top5_concentration = (
+        float(sum(positive[:5]) / positive_total) if positive_total > 0 else 1.0
+    )
+    max_single_concentration = (
+        float(positive[0] / positive_total) if positive_total > 0 and positive else 1.0
+    )
+    invested_dates = sum(period.positions > 0 for period in periods)
+    position_selections = sum(period.positions for period in periods)
+    if len(excess) < 2 or iterations <= 0:
+        observed = (float(np.prod(1.0 + excess) - 1.0) * 100.0) if len(excess) else 0.0
+        ci_low = ci_high = observed
+        probability_positive = float(observed > 0)
+    else:
+        rng = np.random.default_rng(int(seed))
+        block = max(1, min(int(block_size), len(excess)))
+        samples: list[float] = []
+        starts = np.arange(len(excess))
+        for _ in range(max(100, int(iterations))):
+            values: list[float] = []
+            while len(values) < len(excess):
+                start = int(rng.choice(starts))
+                values.extend(excess[(start + offset) % len(excess)] for offset in range(block))
+            sampled = np.asarray(values[:len(excess)], dtype=float)
+            samples.append(float(np.prod(1.0 + sampled) - 1.0) * 100.0)
+        ci_low, ci_high = np.quantile(np.asarray(samples), [0.025, 0.975])
+        probability_positive = float(np.mean(np.asarray(samples) > 0))
+    return {
+        "method": "moving_block_bootstrap",
+        "iterations": max(0, int(iterations)),
+        "block_size": max(1, int(block_size)),
+        "independent_dates": len(periods),
+        "invested_dates": invested_dates,
+        "position_selections": position_selections,
+        "invested_date_rate": round(invested_dates / max(1, len(periods)), 6),
+        "excess_total_return_ci_low_pct": round(float(ci_low), 6),
+        "excess_total_return_ci_high_pct": round(float(ci_high), 6),
+        "probability_positive_excess": round(probability_positive, 6),
+        "top5_positive_return_concentration": round(top5_concentration, 6),
+        "max_single_positive_return_concentration": round(max_single_concentration, 6),
+    }
+
+
+def _regime_analysis(periods: list[PortfolioPeriod], horizon: int) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for axis, attribute in (
+        ("market", "market_regime"),
+        ("volatility", "volatility_regime"),
+        ("liquidity", "liquidity_regime"),
+    ):
+        groups: dict[str, list[PortfolioPeriod]] = {}
+        for period in periods:
+            groups.setdefault(str(getattr(period, attribute)), []).append(period)
+        result[axis] = {}
+        for name, values in sorted(groups.items()):
+            returns = [period.net_return_pct / 100.0 for period in values]
+            excess = [
+                (period.net_return_pct - period.benchmark_return_pct) / 100.0
+                for period in values
+            ]
+            result[axis][name] = {
+                "periods": len(values),
+                "invested_dates": sum(period.positions > 0 for period in values),
+                "portfolio": _return_metrics(returns, horizon),
+                "excess": _return_metrics(excess, horizon),
+            }
+    return result
+
+
+def _portfolio_promotion_gate(
+    periods: list[PortfolioPeriod],
+    significance: dict[str, Any],
+    regime_analysis: dict[str, Any],
+    config: PortfolioBacktestConfig,
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    eligible_regimes = []
+    for axis_groups in regime_analysis.values():
+        for name, metrics in axis_groups.items():
+            if metrics["periods"] >= config.min_regime_periods:
+                eligible_regimes.append((name, metrics))
+    regime_floor = min(
+        (
+            float(metrics["excess"].get("total_return_pct") or 0.0)
+            for _, metrics in eligible_regimes
+        ),
+        default=-float("inf"),
+    )
+    checks = {
+        "pre_registered_policy": bool(policy.get("promotion_eligible")),
+        "sufficient_independent_dates": len(periods) >= config.min_independent_dates,
+        "sufficient_invested_dates": significance["invested_dates"] >= config.min_invested_dates,
+        "sufficient_position_selections": (
+            significance["position_selections"] >= config.min_position_selections
+        ),
+        "positive_block_bootstrap_ci": (
+            significance["excess_total_return_ci_low_pct"] > 0
+        ),
+        "profit_not_over_concentrated": (
+            significance["top5_positive_return_concentration"]
+            <= config.max_top5_profit_concentration
+        ),
+        "regime_coverage": len(eligible_regimes) >= 3,
+        "no_catastrophic_regime": regime_floor >= -abs(config.max_regime_loss_pct),
+    }
+    passed = all(checks.values())
+    return {
+        "should_promote": passed,
+        "shadow_only": not passed,
+        "checks": checks,
+        "eligible_regime_groups": len(eligible_regimes),
+        "worst_regime_excess_return_pct": (
+            round(regime_floor, 6) if math.isfinite(regime_floor) else None
+        ),
+        "required": {
+            "min_independent_dates": config.min_independent_dates,
+            "min_invested_dates": config.min_invested_dates,
+            "min_position_selections": config.min_position_selections,
+            "max_top5_profit_concentration": config.max_top5_profit_concentration,
+            "min_regime_periods": config.min_regime_periods,
+            "max_regime_loss_pct": config.max_regime_loss_pct,
+        },
+        "reason": (
+            "组合通过预注册、显著性、稀疏度、集中度和市场状态门禁"
+            if passed
+            else "组合保持 shadow，尚未通过全部预注册显著性与稳定性门禁"
+        ),
     }

@@ -72,6 +72,16 @@ class PredictionRecord:
     summary: str = ""
     report_json: str = ""
     report_md: str = ""
+    cohort_id: str = ""
+    lineage_json: str = ""
+    code_revision: str = ""
+    prompt_bundle_hash: str = ""
+    skill_registry_hash: str = ""
+    verification_status: str = ""
+    verification_attempts: int = 0
+    last_verification_attempt_at: Optional[str] = None
+    next_verification_at: Optional[str] = None
+    verification_last_error: str = ""
 
     @property
     def is_verified(self) -> bool:
@@ -111,6 +121,7 @@ class PredictionStore:
                 conn.executescript(schema_path.read_text(encoding="utf-8"))
             self._migrate_schema(conn)
             self._backfill_prediction_v2_columns(conn)
+            self._backfill_verification_queue(conn)
             conn.commit()
         logger.info(f"数据库就绪: {self.db_path}")
 
@@ -147,6 +158,16 @@ class PredictionStore:
             "target_type_used": "TEXT",
             "brier_score": "REAL",
             "edge_hit": "INTEGER",
+            "cohort_id": "TEXT",
+            "lineage_json": "TEXT",
+            "code_revision": "TEXT",
+            "prompt_bundle_hash": "TEXT",
+            "skill_registry_hash": "TEXT",
+            "verification_status": "TEXT DEFAULT 'scheduled'",
+            "verification_attempts": "INTEGER DEFAULT 0",
+            "last_verification_attempt_at": "TEXT",
+            "next_verification_at": "TEXT",
+            "verification_last_error": "TEXT",
         })
         self._ensure_columns(conn, "accuracy_stats", {
             "brier_score": "REAL DEFAULT 0",
@@ -158,6 +179,11 @@ class PredictionStore:
         })
         conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_decision ON predictions(decision)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_edge ON predictions(edge_score)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_cohort ON predictions(cohort_id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_predictions_verification_due "
+            "ON predictions(verification_status, next_verification_at)"
+        )
 
     @staticmethod
     def _ensure_columns(
@@ -255,6 +281,19 @@ class PredictionStore:
                     row["id"],
                 ),
             )
+
+    @staticmethod
+    def _backfill_verification_queue(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """UPDATE predictions SET verification_status=CASE
+                   WHEN verified_at IS NOT NULL THEN 'verified'
+                   ELSE 'scheduled' END
+               WHERE verification_status IS NULL OR verification_status=''"""
+        )
+        conn.execute(
+            """UPDATE predictions SET next_verification_at=valid_until
+               WHERE verified_at IS NULL AND next_verification_at IS NULL"""
+        )
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -512,6 +551,13 @@ class PredictionStore:
 
         mag = report.magnitude
         v2 = self._prediction_v2_payload_from_report(report, target, timeframe)
+        from src.core.prediction_lineage import build_prediction_lineage
+
+        lineage = build_prediction_lineage(
+            report=report,
+            agent_results=agent_results,
+            llm_model=llm_model,
+        )
 
         with self._conn() as conn:
             conn.execute(
@@ -527,8 +573,11 @@ class PredictionStore:
                     prob_no_edge, edge_score, decision, no_trade_reason, neutral_reason,
                     predicted_at, valid_until,
                     agents_used, agents_failed, elapsed_seconds, llm_model,
+                    cohort_id, lineage_json, code_revision, prompt_bundle_hash,
+                    skill_registry_hash, verification_status,
+                    verification_attempts, next_verification_at,
                     summary, report_json, report_md)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     pid, target, target_name, timeframe,
                     report.direction.value,
@@ -561,6 +610,14 @@ class PredictionStore:
                     json.dumps(agents_used, ensure_ascii=False),
                     json.dumps(agents_failed, ensure_ascii=False) if agents_failed else None,
                     elapsed_seconds, llm_model,
+                    lineage["cohort_id"],
+                    json.dumps(lineage, ensure_ascii=False),
+                    lineage["code_revision"],
+                    lineage["prompt_bundle_hash"],
+                    lineage["skill_registry_hash"],
+                    "scheduled",
+                    0,
+                    valid_until.isoformat(),
                     report.summary,
                     report.to_json(),
                     report.to_markdown(),
@@ -610,17 +667,24 @@ class PredictionStore:
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT * FROM predictions 
-                   WHERE target=? AND verified_at IS NULL AND valid_until < ?""",
-                (target, now.isoformat()),
+                   WHERE target=? AND verified_at IS NULL AND valid_until < ?
+                     AND (next_verification_at IS NULL OR next_verification_at <= ?)""",
+                (target, now.isoformat(), now.isoformat()),
             ).fetchall()
 
         verified = 0
         for row in rows:
+            self._mark_verification_attempt(row["id"])
             try:
                 if self._verify_one(dict(row)):
                     verified += 1
+                else:
+                    self._schedule_verification_retry(
+                        row["id"], "验证窗口行情尚不可用或数据源暂时失败",
+                    )
             except Exception as e:
                 logger.warning(f"验证预测 {row['id']} 失败: {e}")
+                self._schedule_verification_retry(row["id"], str(e))
 
         if verified:
             self._refresh_stats()
@@ -628,6 +692,7 @@ class PredictionStore:
 
     def verify_all(self) -> dict:
         """验证所有标的的过期预测"""
+        before = self.get_verification_queue_status()
         with self._conn() as conn:
             targets = conn.execute(
                 "SELECT DISTINCT target FROM predictions WHERE verified_at IS NULL"
@@ -637,7 +702,20 @@ class PredictionStore:
         for (t,) in targets:
             total += self.verify_predictions(t)
 
-        return {"verified": total}
+        queue = self.get_verification_queue_status()
+        return {
+            "verified": total,
+            "attempted": max(
+                0,
+                int(queue.get("attempted_total") or 0)
+                - int(before.get("attempted_total") or 0),
+            ),
+            "retry_scheduled": max(
+                0,
+                int(queue.get("retry_scheduled") or 0)
+                - int(before.get("retry_scheduled") or 0),
+            ),
+        }
 
     def get_verification_queue_status(self) -> dict:
         """Return a compact status view for automatic evidence maintenance."""
@@ -649,15 +727,65 @@ class PredictionStore:
                        SUM(CASE WHEN verified_at IS NOT NULL THEN 1 ELSE 0 END) AS verified,
                        SUM(CASE WHEN verified_at IS NULL THEN 1 ELSE 0 END) AS pending,
                        SUM(CASE WHEN verified_at IS NULL AND valid_until < ? THEN 1 ELSE 0 END) AS overdue,
+                       SUM(CASE WHEN target_version='v3.1' THEN 1 ELSE 0 END) AS v31_total,
+                       SUM(CASE WHEN target_version='v3.1' AND verified_at IS NULL THEN 1 ELSE 0 END) AS v31_pending,
+                       SUM(CASE WHEN verification_status='retry_scheduled' THEN 1 ELSE 0 END) AS retry_scheduled,
+                       SUM(COALESCE(verification_attempts, 0)) AS attempted_total,
                        MAX(predicted_at) AS latest_prediction_at,
                        MAX(verified_at) AS latest_verified_at
                    FROM predictions""",
                 (now,),
             ).fetchone()
         payload = dict(row or {})
-        for key in ("total", "verified", "pending", "overdue"):
+        for key in (
+            "total", "verified", "pending", "overdue", "v31_total", "v31_pending",
+            "retry_scheduled", "attempted_total",
+        ):
             payload[key] = int(payload.get(key) or 0)
         return payload
+
+    def get_cohort_status(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT COALESCE(cohort_id, 'legacy') AS cohort_id,
+                          target_version, COUNT(*) AS total,
+                          SUM(verified_at IS NOT NULL) AS verified,
+                          SUM(verified_at IS NULL) AS pending,
+                          MIN(predicted_at) AS first_prediction_at,
+                          MAX(predicted_at) AS latest_prediction_at
+                   FROM predictions
+                   GROUP BY COALESCE(cohort_id, 'legacy'), target_version
+                   ORDER BY latest_prediction_at DESC"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _mark_verification_attempt(self, prediction_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE predictions SET
+                       verification_attempts=COALESCE(verification_attempts, 0)+1,
+                       last_verification_attempt_at=?, verification_status='verifying'
+                   WHERE id=? AND verified_at IS NULL""",
+                (datetime.now().isoformat(), prediction_id),
+            )
+            conn.commit()
+
+    def _schedule_verification_retry(self, prediction_id: str, error: str) -> None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(verification_attempts, 0) AS attempts FROM predictions WHERE id=?",
+                (prediction_id,),
+            ).fetchone()
+            attempts = int((row or {})["attempts"] or 0)
+            delay_hours = min(24, max(1, 2 ** max(0, attempts - 1)))
+            next_attempt = datetime.now() + timedelta(hours=delay_hours)
+            conn.execute(
+                """UPDATE predictions SET verification_status='retry_scheduled',
+                       next_verification_at=?, verification_last_error=?
+                   WHERE id=? AND verified_at IS NULL""",
+                (next_attempt.isoformat(), str(error)[:1000], prediction_id),
+            )
+            conn.commit()
 
     def get_recent_targets(self, limit: int = 50) -> list[str]:
         """Return distinct recently predicted targets in deterministic recency order."""
@@ -845,7 +973,8 @@ class PredictionStore:
                    market_beta=?,
                    brier_score=?, edge_hit=?,
                    direction_correct=?,
-                   magnitude_hit=?, verified_at=?
+                   magnitude_hit=?, verified_at=?, verification_status='verified',
+                   next_verification_at=NULL, verification_last_error=NULL
                    WHERE id=?""",
                 (
                     actual_dir,
@@ -1150,6 +1279,8 @@ class PredictionStore:
                    expected_excess_return_pct, prob_up, prob_down, prob_no_edge,
                    expected_return_p10, expected_return_p50, expected_return_p90,
                    edge_score, decision, no_trade_reason, neutral_reason,
+                   cohort_id, verification_status, verification_attempts,
+                   next_verification_at, verification_last_error,
                    actual_effective_return_pct, actual_absolute_return_pct,
                    actual_benchmark_return_pct, target_type_used,
                    brier_score, edge_hit
@@ -1227,6 +1358,16 @@ class PredictionStore:
             summary=r.get("summary", "") or "",
             report_json=r.get("report_json", "") or "",
             report_md=r.get("report_md", "") or "",
+            cohort_id=r.get("cohort_id") or "",
+            lineage_json=r.get("lineage_json") or "",
+            code_revision=r.get("code_revision") or "",
+            prompt_bundle_hash=r.get("prompt_bundle_hash") or "",
+            skill_registry_hash=r.get("skill_registry_hash") or "",
+            verification_status=r.get("verification_status") or "",
+            verification_attempts=int(r.get("verification_attempts") or 0),
+            last_verification_attempt_at=r.get("last_verification_attempt_at"),
+            next_verification_at=r.get("next_verification_at"),
+            verification_last_error=r.get("verification_last_error") or "",
         )
 
     def _update_agent_calibration_from_verification(

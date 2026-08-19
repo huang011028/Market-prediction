@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=20260715-v35">
+    <link rel="stylesheet" href="/static/styles.css?v=20260716-v37">
 </head>
 <body>
     <!-- 顶部导航 -->
@@ -438,7 +438,7 @@
                 <div class="improvement-header">
                     <div>
                         <h2>Quant 验证中心</h2>
-                        <p>Target V3.1 · PIT 特征 · Walk-forward · 学习型 Aggregator · 成本后组合回测</p>
+                        <p>Target V3.1 · PIT 财务与一致预期 · Walk-forward · 学习型 Aggregator · 成本后组合回测</p>
                     </div>
                     <button id="refreshQuantBtn" class="secondary-btn">刷新状态</button>
                 </div>
@@ -459,7 +459,7 @@
                                 <h3>1. PIT 历史特征</h3>
                                 <p class="panel-subtitle">技术 K 线可立即回放；其他 Agent 只接受真实时点快照。</p>
                             </div>
-                            <span class="loop-badge">Research Data V2.2</span>
+                            <span class="loop-badge">Research Data V2.4</span>
                         </div>
                         <div class="settings-grid quant-settings-grid">
                             <label><span>训练标的</span><input id="quantTargets" type="text" value="000001,600519,000333,300750,600036"></label>
@@ -476,6 +476,7 @@
                         </div>
                         <div class="improvement-actions">
                             <button id="refreshQuantEnrichmentBtn" class="secondary-btn" title="联网采集公告日财报、巨潮公告和行业变更有效区间">刷新 PIT 丰富特征</button>
+                            <button id="runQuantFeatureAuditBtn" class="secondary-btn" title="检查覆盖率、时效、漂移、异常值和 PIT 血缘">运行特征质量审计</button>
                             <button id="buildQuantDatasetBtn" class="analyze-btn">构建 PIT 特征</button>
                         </div>
                     </div>
@@ -509,7 +510,24 @@
                     <div class="improvement-panel quant-panel">
                         <div class="panel-title-row">
                             <div>
-                                <h3>3. 学习型 Aggregator</h3>
+                                <h3>3. 两阶段 Quant</h3>
+                                <p class="panel-subtitle">先识别可操作边际，再对候选股票排序；冻结协议会自动完成校准、消融和成本后回测。</p>
+                            </div>
+                            <span class="loop-badge">Phase 2 · Shadow</span>
+                        </div>
+                        <div class="quant-protocol" aria-label="两阶段 Quant 冻结协议">
+                            <div><span>第一阶段</span><strong>Logistic / LightGBM 边际门</strong></div>
+                            <div><span>第二阶段</span><strong>Ridge / LightGBM 收益排序</strong></div>
+                            <div><span>验证</span><strong>Validation-only 校准与阈值</strong></div>
+                            <div><span>保护</span><strong>Purge · Block bootstrap · Lockbox</strong></div>
+                        </div>
+                        <div class="improvement-actions"><button id="runQuantTwoStageBtn" class="analyze-btn">运行两阶段验证</button></div>
+                    </div>
+
+                    <div class="improvement-panel quant-panel">
+                        <div class="panel-title-row">
+                            <div>
+                                <h3>4. 学习型 Aggregator</h3>
                                 <p class="panel-subtitle">只使用 live/out-of-fold 预测学习非负权重；样本不足时保持静态权重。</p>
                             </div>
                         </div>
@@ -526,7 +544,7 @@
                     <div class="improvement-panel quant-panel">
                         <div class="panel-title-row">
                             <div>
-                                <h3>4. 成本后组合回测</h3>
+                                <h3>5. 成本后组合回测</h3>
                                 <p class="panel-subtitle">读取 Walk-forward OOF 预测，模拟市场成本、换手、仓位和做空限制。</p>
                             </div>
                         </div>
@@ -545,7 +563,7 @@
                     <div class="improvement-panel quant-panel">
                         <div class="panel-title-row">
                             <div>
-                                <h3>5. 证据维护</h3>
+                                <h3>6. 证据维护</h3>
                                 <p class="panel-subtitle">验证已到期预测；可选采集近期预测标的的今日基本面、行业、宏观和新闻快照。</p>
                             </div>
                             <span class="loop-badge">Auto</span>
@@ -708,6 +726,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260715-v35"></script>
+    <script src="/static/app.js?v=20260716-v37"></script>
 </body>
 </html>

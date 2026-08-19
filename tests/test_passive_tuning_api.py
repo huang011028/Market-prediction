@@ -109,7 +109,10 @@ def test_prediction_store_persists_prediction_target_v2_fields(tmp_path):
     with store._conn() as conn:
         row = conn.execute(
             """SELECT expected_excess_return_pct, prob_up, prob_no_edge,
-                      edge_score, decision, target_type, horizon
+                      edge_score, decision, target_type, horizon, cohort_id,
+                      lineage_json, code_revision, prompt_bundle_hash,
+                      skill_registry_hash, verification_status,
+                      verification_attempts, next_verification_at
                FROM predictions WHERE id=?""",
             (pid,),
         ).fetchone()
@@ -121,6 +124,14 @@ def test_prediction_store_persists_prediction_target_v2_fields(tmp_path):
     assert row["decision"] == "long_bias"
     assert row["target_type"] in {"residual_return", "excess_return", "absolute_return"}
     assert row["horizon"] == "5d"
+    assert row["cohort_id"].startswith("v3.1-forward-")
+    assert json.loads(row["lineage_json"])["lineage_version"] == "prediction_lineage.v1"
+    assert row["code_revision"]
+    assert row["prompt_bundle_hash"]
+    assert row["skill_registry_hash"]
+    assert row["verification_status"] == "scheduled"
+    assert row["verification_attempts"] == 0
+    assert row["next_verification_at"]
 
     record = store.get_prediction(pid)
     assert record.expected_excess_return_pct == 2.1

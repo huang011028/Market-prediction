@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
@@ -23,6 +24,7 @@ from src.core.quant_models import (
 )
 from src.core.quant_calibration import MulticlassProbabilityCalibrator
 from src.core.experiment_manifest import detect_experiment_source, write_experiment_manifest
+from src.core.experiment_ledger import ExperimentLedger, trial_from_report
 from src.core.quant_stacking import ConstrainedIndustryStacker
 from src.data.quant_feature_store import FEATURE_SCHEMA_VERSION, QuantFeatureStore
 
@@ -55,6 +57,7 @@ class WalkForwardConfig:
     max_industry_stack_weight: float = 0.35
     min_industry_stack_brier_delta: float = 0.0
     min_actionable_coverage: float = 0.01
+    research_family: str = "quant_directional_edge"
 
 
 @dataclass
@@ -92,8 +95,13 @@ class WalkForwardReport:
 
 
 class QuantWalkForwardEvaluator:
-    def __init__(self, store: Optional[QuantFeatureStore] = None):
+    def __init__(
+        self,
+        store: Optional[QuantFeatureStore] = None,
+        ledger: Optional[ExperimentLedger] = None,
+    ):
         self.store = store or QuantFeatureStore()
+        self.ledger = ledger
 
     def run(
         self,
@@ -129,12 +137,22 @@ class QuantWalkForwardEvaluator:
         skipped: list[dict] = []
         all_test_metrics: dict[str, list[dict]] = {}
         artifact_paths: dict[str, Any] = {}
-        trial_id = datetime.now().strftime("quant_wf_%Y%m%d_%H%M%S")
+        trial_id = datetime.now().strftime("quant_wf_%Y%m%d_%H%M%S_%f")
         root = Path(output_dir) if output_dir else Path("output") / "quant_walk_forward" / trial_id
         root.mkdir(parents=True, exist_ok=True)
-        ledger_path = root.parent / "trial_ledger.jsonl"
-        prior_trials = self._prior_trial_count(
-            ledger_path, config.market, config.horizon, config.feature_version,
+        local_ledger_path = root.parent / "trial_ledger.jsonl"
+        source_type = detect_experiment_source()
+        global_ledger = self.ledger
+        if global_ledger is None:
+            if source_type == "test" or os.getenv("PYTEST_CURRENT_TEST"):
+                global_ledger = ExperimentLedger(root.parent / ".experiment_ledger.db")
+            else:
+                global_ledger = ExperimentLedger.default()
+        prior_trials = global_ledger.prior_trial_count(
+            research_family=config.research_family,
+            market=config.market,
+            horizon=config.horizon,
+            target_version=config.target_version,
         )
 
         for index, (train, validation, test) in enumerate(fold_specs, start=1):
@@ -398,6 +416,16 @@ class QuantWalkForwardEvaluator:
             except Exception as exc:
                 lockbox["error"] = str(exc)
 
+        dataset_hash = _dataset_hash(rows)
+        promotion["research_family"] = config.research_family
+        promotion["research_key"] = ExperimentLedger.research_key(
+            config.research_family,
+            config.market,
+            config.horizon,
+            config.target_version,
+        )
+        promotion["global_ledger_path"] = str(global_ledger.db_path)
+        promotion["global_trial_count_before"] = prior_trials
         report = WalkForwardReport(
             generated_at=datetime.now().isoformat(),
             config=asdict(config),
@@ -409,7 +437,7 @@ class QuantWalkForwardEvaluator:
                 "unique_dates": len({row["as_of"] for row in rows}),
                 "unique_symbols": len({row["symbol"] for row in rows}),
                 "date_range": [rows[0]["as_of"], rows[-1]["as_of"]],
-                "dataset_hash": _dataset_hash(rows),
+                "dataset_hash": dataset_hash,
             },
             folds=folds,
             aggregate_metrics=aggregate,
@@ -424,11 +452,22 @@ class QuantWalkForwardEvaluator:
         )
         report_path = root / "walk_forward_report.json"
         report.artifact_paths["report"] = str(report_path)
+        global_ledger.append(trial_from_report(
+            trial_id=trial_id,
+            research_family=config.research_family,
+            config=asdict(config),
+            dataset_hash=dataset_hash,
+            report_path=str(report_path),
+            source_type=source_type,
+            promotion=promotion,
+            aggregate_metrics=aggregate,
+        ))
+        promotion["global_trial_count_after"] = prior_trials + 1
         manifest_path = write_experiment_manifest(
             root,
             experiment_id=root.name,
             kind="quant_walk_forward",
-            source_type=detect_experiment_source(),
+            source_type=source_type,
             config=asdict(config),
             dataset_hash=report.data_summary["dataset_hash"],
             artifacts=report.artifact_paths,
@@ -443,7 +482,7 @@ class QuantWalkForwardEvaluator:
         report_path.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        self._append_trial(ledger_path, report, report_path)
+        self._append_trial(local_ledger_path, report, report_path)
         return report
 
     @staticmethod
@@ -555,6 +594,15 @@ FEATURE_SETS: dict[str, list[str]] = {
     "technical_valuation": ["technical", "valuation"],
     "enriched": ["technical", "fundamental", "news", "industry", "valuation", "market"],
     "research_v2": ["technical", "fundamental", "news", "industry", "valuation", "market"],
+    "technical_size": ["technical", "valuation", "style", "market"],
+    "technical_cashflow": ["technical", "cashflow", "balance", "valuation", "style", "market"],
+    "technical_consensus": ["technical", "consensus", "valuation", "style", "market"],
+    "technical_events": ["technical", "news", "style", "market"],
+    "technical_industry_v2": ["technical", "industry", "style", "market", "valuation"],
+    "phase2_full": [
+        "technical", "fundamental", "balance", "cashflow", "consensus", "news",
+        "industry", "valuation", "style", "market",
+    ],
     "all": ["all"],
 }
 

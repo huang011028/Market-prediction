@@ -37,6 +37,8 @@ def main() -> None:
     parser.add_argument("--skip-performance", action="store_true")
     parser.add_argument("--skip-announcements", action="store_true")
     parser.add_argument("--skip-industry", action="store_true")
+    parser.add_argument("--skip-financial-quality", action="store_true")
+    parser.add_argument("--skip-consensus", action="store_true")
     args = parser.parse_args()
 
     symbols = list(args.symbols)
@@ -67,6 +69,8 @@ def main() -> None:
         include_performance=not args.skip_performance,
         include_announcements=not args.skip_announcements,
         include_industry=not args.skip_industry,
+        include_financial_quality=not args.skip_financial_quality,
+        include_consensus=not args.skip_consensus,
     )))
     location = resolve_experiment_location(
         "quant_pit_enrichment",

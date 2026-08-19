@@ -15,16 +15,16 @@ AI Agent 团队驱动的市场分析与预测研究工具。
 - CLI: 通过 `scripts/run_analysis.py` 运行单标的分析。
 - Web/API: FastAPI 后端 + 原生 HTML/CSS/JS 前端，支持异步分析任务、状态轮询、取消任务、分钟/日线走势切换、支撑压力/量能摘要、历史完整报告查看。
 - 预测追踪: 使用 SQLite 记录预测与 Agent 结果。
-- 回测雏形: 支持技术面历史快照回放，回测口径仍在持续完善。
+- 研究验证: 已具备 PIT Quant 数据、两阶段 Gate+Rank 模型、Ridge/Logistic/LightGBM、purged Walk-forward、全局只追加试验账本、预注册组合门禁、lockbox、Prompt/Skill Replay 和成本后组合回测。
 - 测试: 覆盖较多纯逻辑模块，网络/LLM/慢速测试需要显式开启。
 
 仍在收口的部分:
 
 - 外部数据源仍可能不稳定，系统会尽量标出失败/降级原因，但不能保证每次联网取数都成功。
 - 中文标的解析已覆盖常见样例，并会尝试读取 AkShare A 股名称表；冷门简称或别名仍需要继续补充。
-- 基本面、宏观、行业等历史快照回放还不完整。
-- 准确率统计依赖足够多到期预测样本。
-- Web 已能支撑本地交互使用，但异步任务表仍是单进程内存实现，尚未接入生产级任务队列。
+- A 股 `5d` 已完成 Research Data V2.4 与 Phase 2 两阶段 Quant 验证；严格 PIT 市值、现金流、资产负债和机构一致预期已接入，行业特征族有小幅 OOF 增量，但概率、Top-K 与成本后收益门禁仍未通过。港股、美股和 `20d/60d` 尚未形成同等级历史证据。
+- 现有正式预测仍以旧口径样本为主，Target V3.1 前瞻到期样本需要持续积累。
+- Web 异步任务已使用 SQLite 持久化并支持重启恢复；仍未达到分布式生产队列、SLA 和告警水平。
 
 ## Agent 团队
 
@@ -60,6 +60,8 @@ Market-prediction/
 ├── tests/                        # 单元测试和集成测试
 ├── ARCHITECTURE.md               # 更详细的架构说明
 ├── PROJECT_STATUS_REVIEW.md      # 当前问题与改进路线
+├── PROJECT_FRAMEWORK.md          # V1 当前有效架构与生产边界
+├── PROJECT_ROADMAP.md            # 总目标、阶段计划与验收门槛
 └── 20260705_星网锐捷优化建议.md   # 星网锐捷问题复盘与优化执行记录
 ```
 
@@ -209,9 +211,9 @@ python scripts/run_backtest.py --target 000001 --start 2025-01-01 --end 2025-06-
 
 注意:
 
-- 当前回测只对技术面 Agent 做历史 K 线快照回放。
-- 基本面、宏观、行业、新闻的严格历史快照仍需继续建设。
-- 回测结果应作为工程验证工具，而不是投资胜率承诺。
+- 技术面支持历史 K 线回放，新闻、基本面、行业和宏观支持 PIT 快照归档；五个 LLM Agent 仍缺同口径的大规模 OOF 回放。
+- Quant Core 已支持 A 股 `5d` 的 `quant_features.v4`、特征质量审计、统计基线、两阶段边际门控与收益排序、Walk-forward 和成本回测，但所有候选仍为 `shadow_only`。正式 Phase 2 报告位于 `output/quant_two_stage/phase2_two_stage_v2b_20260716/`。
+- 回测结果应作为工程与研究验证工具，而不是投资胜率承诺。
 
 预测追踪:
 

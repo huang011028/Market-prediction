@@ -19,7 +19,7 @@ from typing import Any, Iterable, Optional
 from src.data.point_in_time_lineage import validate_point_in_time_write
 
 
-FEATURE_SCHEMA_VERSION = "quant_features.v3"
+FEATURE_SCHEMA_VERSION = "quant_features.v4"
 
 
 @dataclass

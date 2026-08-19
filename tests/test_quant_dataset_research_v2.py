@@ -1,5 +1,22 @@
 from src.core.quant_dataset import QuantHistoricalDatasetBuilder
-from src.data.quant_feature_store import QuantFeatureRow, QuantFeatureStore
+from src.data.quant_feature_store import FEATURE_SCHEMA_VERSION, QuantFeatureRow, QuantFeatureStore
+
+
+def test_v4_valuation_builds_strict_pit_market_cap_and_book_to_market():
+    values = QuantHistoricalDatasetBuilder._valuation_features(
+        {
+            "balance__share_capital": 100_000_000,
+            "balance__total_equity": 500_000_000,
+            "fundamental__basic_eps": 0.5,
+        },
+        10.0,
+        {"fundamental": {"report_date": "2025-03-31"}},
+    )
+
+    assert values["meta__market_cap"] == 1_000_000_000
+    assert values["valuation__market_cap"] == 1_000_000_000
+    assert values["valuation__book_to_market"] == 0.5
+    assert values["valuation__pb_proxy"] == 2.0
 
 
 def test_research_v2_adds_only_same_date_and_expanding_features(tmp_path):
@@ -40,7 +57,7 @@ def test_research_v2_adds_only_same_date_and_expanding_features(tmp_path):
         end_date=dates[-1],
     )
 
-    rows = store.rows(feature_version="quant_features.v3", limit=100)
+    rows = store.rows(feature_version=FEATURE_SCHEMA_VERSION, limit=100)
     first = next(row for row in rows if row["as_of"] == dates[0] and row["symbol"] == symbols[0])
     last = next(row for row in rows if row["as_of"] == dates[-1] and row["symbol"] == symbols[-1])
     assert counts["rows_updated"] == 25

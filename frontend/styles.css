@@ -78,6 +78,31 @@
     grid-column: 1 / -1;
 }
 
+.quant-protocol {
+    display: grid;
+    gap: 0;
+    margin-top: 14px;
+    border-top: 1px solid var(--border-color, #d8dee8);
+}
+
+.quant-protocol > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-color, #d8dee8);
+    font-size: 13px;
+}
+
+.quant-protocol span {
+    color: var(--text-secondary, #667085);
+}
+
+.quant-protocol strong {
+    text-align: right;
+    font-weight: 600;
+}
+
 .quant-dependencies {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import asyncio
+import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -116,6 +117,10 @@ class QuantHistoricalDatasetBuilder:
             "news": 0,
             "industry": 0,
             "valuation": 0,
+            "balance": 0,
+            "cashflow": 0,
+            "consensus": 0,
+            "market_cap": 0,
         }
         dates = self._dates(config.start_date, config.end_date, config.interval_days)
         target_spec = default_target_spec(config.timeframe, market=config.universe_market)
@@ -373,6 +378,10 @@ class QuantHistoricalDatasetBuilder:
             "meta__daily_volatility_pct": float(volatility or 0.0),
             "meta__price": float(price_data.price_current),
             "meta__avg_traded_value_20d": round(avg_traded_value, 2),
+            "market__beta_rolling": (
+                round(float(target_spec.market_beta), 6)
+                if target_spec.market_beta is not None else None
+            ),
         })
         if universe_row:
             list_date = str(universe_row.get("list_date") or "")[:10]
@@ -468,6 +477,10 @@ class QuantHistoricalDatasetBuilder:
             "news": bool(features.get("news__official_available")),
             "industry": bool(features.get("meta__industry_pit_verified")),
             "valuation": any(key.startswith("valuation__") for key in features),
+            "balance": bool(features.get("balance__available")),
+            "cashflow": bool(features.get("cashflow__available")),
+            "consensus": bool(features.get("consensus__available")),
+            "market_cap": _finite_number(features.get("meta__market_cap")) is not None,
         }
 
     @staticmethod
@@ -506,6 +519,16 @@ class QuantHistoricalDatasetBuilder:
             )
         if book_value is not None and book_value > 0 and current_price > 0:
             result["valuation__pb_proxy"] = round(current_price / book_value, 6)
+        shares = _finite_number(features.get("balance__share_capital"))
+        equity = _finite_number(features.get("balance__total_equity"))
+        if shares is not None and shares > 0 and current_price > 0:
+            market_cap = current_price * shares
+            result["valuation__market_cap"] = round(market_cap, 2)
+            result["meta__market_cap"] = round(market_cap, 2)
+            result["valuation__log_market_cap"] = round(math.log1p(market_cap), 6)
+            if equity is not None and equity > 0:
+                result["valuation__book_to_market"] = round(equity / market_cap, 8)
+                result.setdefault("valuation__pb_proxy", round(market_cap / equity, 6))
         return result
 
     def _apply_research_v2_features(
@@ -547,6 +570,15 @@ class QuantHistoricalDatasetBuilder:
                 ),
                 "pe": _finite_number(features.get("valuation__pe_proxy")),
                 "pb": _finite_number(features.get("valuation__pb_proxy")),
+                "market_cap": _finite_number(features.get("meta__market_cap")),
+                "liquidity": _finite_number(features.get("meta__avg_traded_value_20d")),
+                "volatility": _finite_number(features.get("meta__daily_volatility_pct")),
+                "beta": _finite_number(features.get("market__beta_rolling")),
+                "cash_conversion": _finite_number(features.get("cashflow__cash_conversion_ratio")),
+                "accrual_ratio": _finite_number(features.get("cashflow__accrual_ratio")),
+                "consensus_revision": _finite_number(
+                    features.get("consensus__eps_current_year_revision")
+                ),
             })
         frame = pd.DataFrame(records).sort_values(["as_of", "symbol"]).reset_index(drop=True)
         updates: dict[str, dict] = {item["feature_id"]: {} for item in records}
@@ -583,6 +615,20 @@ class QuantHistoricalDatasetBuilder:
                 for feature_id in date_group["feature_id"]:
                     updates[feature_id]["market__breadth_positive_20d"] = round(breadth, 6)
 
+            for column, feature_name in (
+                ("market_cap", "style__size_rank_pct"),
+                ("liquidity", "style__liquidity_rank_pct"),
+                ("volatility", "style__volatility_rank_pct"),
+                ("beta", "style__beta_rank_pct"),
+            ):
+                valid = date_group[date_group[column].notna()]
+                if len(valid) >= 5:
+                    ranks = valid[column].rank(method="average", pct=True)
+                    for feature_id, value in zip(valid["feature_id"], ranks):
+                        updates[feature_id][feature_name] = round(float(value), 6)
+
+            total_liquidity = float(date_group["liquidity"].dropna().sum())
+
             verified = date_group[
                 date_group["industry_verified"] & (date_group["industry"] != "unknown")
             ]
@@ -596,11 +642,19 @@ class QuantHistoricalDatasetBuilder:
                 industry_breadth = (
                     float((valid_returns > 0).mean()) if len(valid_returns) >= 3 else None
                 )
+                industry_dispersion = (
+                    float(valid_returns.std(ddof=0)) if len(valid_returns) >= 3 else None
+                )
+                industry_liquidity = float(industry_group["liquidity"].dropna().sum())
                 for column, feature_name in (
                     ("return_20d", "industry__return_20d_rank_pct"),
                     ("netprofit_yoy", "industry__netprofit_yoy_rank_pct"),
                     ("pe", "industry__pe_rank_pct"),
                     ("pb", "industry__pb_rank_pct"),
+                    ("market_cap", "industry__size_rank_pct"),
+                    ("cash_conversion", "industry__cash_conversion_rank_pct"),
+                    ("accrual_ratio", "industry__accrual_quality_rank_pct"),
+                    ("consensus_revision", "industry__consensus_revision_rank_pct"),
                 ):
                     valid = industry_group[industry_group[column].notna()]
                     if len(valid) < 3:
@@ -617,13 +671,22 @@ class QuantHistoricalDatasetBuilder:
                         updates[item.feature_id]["industry__breadth_positive_20d"] = round(
                             industry_breadth, 6
                         )
+                    if industry_dispersion is not None:
+                        updates[item.feature_id]["industry__return_dispersion_20d_pct"] = round(
+                            industry_dispersion, 6
+                        )
+                    updates[item.feature_id]["industry__member_count"] = len(industry_group)
+                    if total_liquidity > 0:
+                        updates[item.feature_id]["industry__liquidity_crowding"] = round(
+                            industry_liquidity / total_liquidity, 6
+                        )
 
         nonempty = [(key, value) for key, value in updates.items() if value]
         changed = self.store.update_features_many(
             nonempty,
             lineage_updates={
                 "research_data_v2": {
-                    "method": "expanding_history_and_same_as_of_cross_section",
+                    "method": "expanding_history_and_same_as_of_cross_section_v4",
                     "feature_version": FEATURE_SCHEMA_VERSION,
                     "point_in_time_verified": True,
                 }

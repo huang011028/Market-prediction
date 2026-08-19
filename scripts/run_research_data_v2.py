@@ -19,6 +19,7 @@ from src.core.experiment_manifest import resolve_experiment_location, write_expe
 from src.core.quant_dataset import QuantDatasetBuildConfig, QuantHistoricalDatasetBuilder
 from src.core.portfolio_backtester import PortfolioBacktestConfig, PortfolioBacktester
 from src.core.quant_walk_forward import QuantWalkForwardEvaluator, WalkForwardConfig
+from src.core.quant_feature_audit import FeatureAuditConfig, QuantFeatureAuditor
 from src.data.investable_universe import InvestableUniverseStore
 from src.data.quant_pit_enrichment import QuantPitEnrichmentRefresher, QuantPitRefreshConfig
 
@@ -80,6 +81,8 @@ async def run(
             include_performance=source["include_performance"],
             include_announcements=source["include_announcements"],
             include_industry=source["include_industry"],
+            include_financial_quality=source.get("include_financial_quality", False),
+            include_consensus=source.get("include_consensus", False),
         )
         enrichment = await QuantPitEnrichmentRefresher().run(refresh_config)
         payload = enrichment.to_dict()
@@ -103,6 +106,15 @@ async def run(
         report["stages"]["dataset"] = payload
         _write_json(location.root / "pipeline_state.json", report)
 
+    if "audit" in stages and config.get("audit"):
+        audit = await asyncio.to_thread(
+            QuantFeatureAuditor().run,
+            FeatureAuditConfig(**config["audit"]),
+            location.root / "audit",
+        )
+        report["stages"]["audit"] = audit
+        _write_json(location.root / "pipeline_state.json", report)
+
     if "walk-forward" in stages:
         walk_config = WalkForwardConfig(**config["walk_forward"])
         walk = await asyncio.to_thread(
@@ -116,6 +128,33 @@ async def run(
     if "portfolio" in stages:
         source = config["portfolio"]
         portfolio_reports = {}
+        production_policy = source.get("production_policy") or {}
+        threshold_specs = []
+        if production_policy:
+            threshold_specs.append({
+                "threshold": float(production_policy["edge_threshold"]),
+                "policy_id": str(production_policy["policy_id"]),
+                "policy_role": "production_candidate",
+                "pre_registered": True,
+                "selection_source": str(
+                    production_policy.get("selection_source") or "frozen_config"
+                ),
+            })
+            threshold_specs.extend({
+                "threshold": float(value),
+                "policy_id": f"diagnostic-edge-{float(value):.2f}",
+                "policy_role": "diagnostic",
+                "pre_registered": False,
+                "selection_source": "diagnostic_only",
+            } for value in source.get("diagnostic_edge_thresholds", []))
+        else:
+            threshold_specs.extend({
+                "threshold": float(value),
+                "policy_id": f"legacy-edge-{float(value):.2f}",
+                "policy_role": "diagnostic",
+                "pre_registered": False,
+                "selection_source": "legacy_edge_thresholds",
+            } for value in source.get("edge_thresholds", []))
         for model_variant in source["model_variants"]:
             prediction_paths = sorted(
                 str(path) for path in (location.root / "walk_forward" / "oof").glob(
@@ -124,17 +163,25 @@ async def run(
             )
             if not prediction_paths:
                 raise ValueError(f"没有找到 {model_variant} 的 OOF 文件")
-            for threshold in source["edge_thresholds"]:
+            for threshold_spec in threshold_specs:
+                threshold = threshold_spec["threshold"]
                 key = f"{model_variant}__edge_{float(threshold):.2f}"
                 payload = {
                     key: value
                     for key, value in source.items()
-                    if key not in {"model_variants", "edge_thresholds"}
+                    if key not in {
+                        "model_variants", "edge_thresholds", "production_policy",
+                        "diagnostic_edge_thresholds",
+                    }
                 }
                 payload.update({
                     "prediction_paths": prediction_paths,
                     "model_name": model_variant,
                     "min_edge_score": float(threshold),
+                    "policy_id": threshold_spec["policy_id"],
+                    "policy_role": threshold_spec["policy_role"],
+                    "pre_registered": threshold_spec["pre_registered"],
+                    "selection_source": threshold_spec["selection_source"],
                 })
                 portfolio = await asyncio.to_thread(
                     PortfolioBacktester().run,
@@ -172,12 +219,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="运行固定 Research Data V2 流水线")
     parser.add_argument(
         "--config",
-        default=str(ROOT / "config" / "quant" / "research_data_v2_2.json"),
+        default=str(ROOT / "config" / "quant" / "research_data_v2_4.json"),
     )
     parser.add_argument(
         "--stage",
         action="append",
-        choices=["enrichment", "dataset", "walk-forward", "portfolio", "all"],
+        choices=["enrichment", "dataset", "audit", "walk-forward", "portfolio", "all"],
         default=[],
         help="可重复指定；默认 all",
     )
@@ -189,7 +236,7 @@ def main() -> None:
     args = parser.parse_args()
     selected = set(args.stage or ["all"])
     stages = (
-        {"enrichment", "dataset", "walk-forward", "portfolio"}
+        {"enrichment", "dataset", "audit", "walk-forward", "portfolio"}
         if "all" in selected else selected
     )
     report = asyncio.run(run(

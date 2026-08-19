@@ -68,6 +68,7 @@ from config.settings import get_settings
 from config.weight_manager import WeightManager
 from src.data.prediction_store import PredictionStore
 from src.data.symbol_resolver import resolve_symbol, SymbolInfo
+from src.core.persistent_job_store import PersistentJobStore
 
 # ================================================================
 # 初始化
@@ -115,8 +116,12 @@ AGENT_NAMES = {
 
 DISCLAIMER = "本项目仅供学习、研究和工程验证使用，不构成任何投资建议。模型输出和数据源都可能出错，请勿直接据此做真实交易决策。"
 
-# 简单内存任务表，适合本地单进程开发运行；生产部署应换成持久化队列/任务系统。
-analysis_jobs: dict[str, dict[str, Any]] = {}
+# SQLite 是任务状态事实源，内存表只保存当前进程的 asyncio task 句柄。
+job_store = PersistentJobStore()
+analysis_jobs: dict[str, dict[str, Any]] = {
+    item["job_id"]: {**item, "task": None}
+    for item in job_store.list_recent(limit=100)
+}
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 
 # ================================================================
@@ -176,6 +181,8 @@ class AnalysisJobResponse(BaseModel):
     updated_at: str
     result: Optional[dict] = None
     error: Optional[str] = None
+    attempts: int = 0
+    max_attempts: int = 3
 
 
 class AgentInfo(BaseModel):
@@ -389,13 +396,25 @@ class QuantPitRefreshRequest(BaseModel):
     include_performance: bool = True
     include_announcements: bool = True
     include_industry: bool = True
+    include_financial_quality: bool = True
+    include_consensus: bool = True
+
+
+class QuantFeatureAuditRequest(BaseModel):
+    market: str = Field(default="A", pattern="^(A|HK|US)$")
+    horizon: str = Field(default="5d", pattern="^(5d|20d|60d)$")
+    target_version: str = Field(default="v3.1", pattern="^v3\\.1$")
+    feature_version: str = "quant_features.v4"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    max_drift_score: float = Field(default=1.5, gt=0.0, le=10.0)
 
 
 class QuantWalkForwardRequest(BaseModel):
     market: str = Field(default="A", pattern="^(A|HK|US)$")
     horizon: str = Field(default="5d", pattern="^(5d|20d|60d)$")
     target_version: str = Field(default="v3.1", pattern="^v3\\.1$")
-    feature_version: str = "quant_features.v3"
+    feature_version: str = "quant_features.v4"
     model_names: list[str] = Field(default_factory=lambda: ["ridge", "logistic", "lightgbm"])
     train_days: int = Field(default=365, ge=60, le=3650)
     validation_days: int = Field(default=90, ge=14, le=730)
@@ -415,6 +434,15 @@ class QuantWalkForwardRequest(BaseModel):
     max_industry_stack_weight: float = Field(default=0.35, ge=0, le=1)
     min_industry_stack_brier_delta: float = Field(default=0.0, ge=0, le=1)
     min_actionable_coverage: float = Field(default=0.01, ge=0, le=1)
+
+
+class QuantTwoStageRequest(BaseModel):
+    config_path: str = "config/quant/two_stage_v2.json"
+    experiment_id: str = Field(
+        default="",
+        pattern=r"^[A-Za-z0-9_-]*$",
+        max_length=80,
+    )
 
 
 class LearnedAggregatorRequest(BaseModel):
@@ -446,6 +474,20 @@ class PortfolioBacktestRequest(BaseModel):
     min_avg_traded_value: float = Field(default=0.0, ge=0)
     max_participation_rate: float = Field(default=0.05, gt=0, le=1)
     impact_coefficient_bps: float = Field(default=15.0, ge=0, le=1000)
+    policy_id: str = "interactive-diagnostic"
+    policy_role: str = Field(default="diagnostic", pattern="^(production_candidate|diagnostic)$")
+    pre_registered: bool = False
+    selection_source: str = "interactive"
+    bootstrap_iterations: int = Field(default=1000, ge=100, le=10000)
+    bootstrap_block_size: int = Field(default=4, ge=1, le=60)
+    bootstrap_seed: int = 42
+    min_independent_dates: int = Field(default=60, ge=5)
+    min_invested_dates: int = Field(default=30, ge=1)
+    min_position_selections: int = Field(default=100, ge=1)
+    max_top5_profit_concentration: float = Field(default=0.50, ge=0, le=1)
+    min_regime_periods: int = Field(default=10, ge=1)
+    max_regime_loss_pct: float = Field(default=10.0, ge=0)
+    regime_threshold_pct: float = Field(default=1.0, ge=0)
 
 
 class EvidenceMaintenanceRequest(BaseModel):
@@ -712,13 +754,18 @@ def _data_quality_from_result(result) -> dict:
 
 
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in job.items() if k != "task"}
+    visible = {
+        "job_id", "status", "progress", "message", "created_at", "updated_at",
+        "result", "error", "attempts", "max_attempts",
+    }
+    return {key: value for key, value in job.items() if key in visible}
 
 
 def _update_job(job_id: str, **fields) -> dict[str, Any]:
     job = analysis_jobs[job_id]
     job.update(fields)
     job["updated_at"] = datetime.now().isoformat()
+    job_store.update(job_id, **fields)
     return job
 
 
@@ -750,6 +797,41 @@ def _latest_files(pattern: str, limit: int = 5) -> list[dict]:
         }
         for path in files[:limit]
     ]
+
+
+def _latest_two_stage_reports(limit: int = 5) -> list[dict]:
+    items = _latest_files(
+        "quant_two_stage/*/quant_two_stage_pipeline_report.json",
+        limit=limit,
+    )
+    for item in items:
+        try:
+            payload = json.loads(Path(item["path"]).read_text(encoding="utf-8"))
+            report = payload.get("two_stage") or {}
+            gate = report.get("promotion_gate") or {}
+            best = (report.get("aggregate_metrics") or {}).get(gate.get("best_model")) or {}
+            portfolios = payload.get("portfolio") or {}
+            item["summary"] = {
+                "experiment_id": payload.get("experiment_id"),
+                "version": payload.get("version"),
+                "folds": len(report.get("folds") or []),
+                "best_model": gate.get("best_model"),
+                "should_promote": bool(gate.get("should_promote")),
+                "brier_score": best.get("brier_score"),
+                "gate_brier_delta": best.get("gate_brier_delta"),
+                "rank_ic": best.get("rank_ic"),
+                "actionable_coverage": best.get("actionable_coverage"),
+                "top_k_mean_return_pct": best.get("top_k_mean_return_pct"),
+                "feature_incremental": gate.get("feature_incremental"),
+                "portfolio_candidates": len(portfolios),
+                "portfolio_promoted": sum(
+                    bool(value.get("promotion_gate", {}).get("should_promote"))
+                    for value in portfolios.values()
+                ),
+            }
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            item["summary"] = {"error": str(exc)}
+    return items
 
 
 def _experiment_location(kind: str, stamp: Optional[str] = None):
@@ -2147,6 +2229,7 @@ async def health_check():
         "model_name": active_model.name,
         "model_id": active_model.id,
         "active_jobs": sum(1 for job in analysis_jobs.values() if job["status"] not in TERMINAL_JOB_STATUSES),
+        "persistent_jobs": job_store.status(),
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -2217,6 +2300,7 @@ async def quant_status():
     from src.data.quant_pit_enrichment import QuantPitEnrichmentStore
     from src.data.quant_price_cache import QuantPriceCache
     from src.core.evidence_maintenance import EvidenceMaintenanceRunner
+    from src.core.experiment_ledger import ExperimentLedger
 
     return {
         "success": True,
@@ -2227,6 +2311,8 @@ async def quant_status():
         "dependencies": dependency_status(),
         "learned_aggregators": LearnedAggregatorPolicy().status(),
         "evidence_maintenance": EvidenceMaintenanceRunner.status(),
+        "experiment_ledger": ExperimentLedger.default().status(),
+        "runtime_jobs": job_store.status(),
         "targets": {
             market: {
                 horizon: default_target_spec(timeframe, market=market).to_dict()
@@ -2241,6 +2327,7 @@ async def quant_status():
         "latest_walk_forward": _latest_files(
             "quant_walk_forward/*/walk_forward_report.json", limit=8,
         ),
+        "latest_two_stage": _latest_two_stage_reports(limit=8),
         "latest_research_data_v2": _latest_files(
             "research_data_v2/*/research_data_v2_report.json", limit=5,
         ),
@@ -2344,7 +2431,9 @@ async def quant_refresh_enrichment(request: QuantPitRefreshRequest):
             include_fundamental=request.include_fundamental,
             include_performance=request.include_performance,
             include_announcements=request.include_announcements,
-            include_industry=request.include_industry,
+                include_industry=request.include_industry,
+                include_financial_quality=request.include_financial_quality,
+                include_consensus=request.include_consensus,
         ))
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = _experiment_location("quant_pit_enrichment", stamp).root
@@ -2359,6 +2448,24 @@ async def quant_refresh_enrichment(request: QuantPitRefreshRequest):
     except Exception as exc:
         logger.error("PIT 丰富特征刷新失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/quant/feature-audit")
+async def quant_feature_audit(request: QuantFeatureAuditRequest):
+    from src.core.quant_feature_audit import FeatureAuditConfig, QuantFeatureAuditor
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = _experiment_location("quant_feature_audit", stamp).root
+    try:
+        report = await asyncio.to_thread(
+            QuantFeatureAuditor().run,
+            FeatureAuditConfig(**request.model_dump()),
+            output_dir,
+        )
+        return {"success": True, "report": report, "report_path": report.get("report_path")}
+    except Exception as exc:
+        logger.error("Quant 特征质量审计失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/quant/walk-forward")
@@ -2376,6 +2483,29 @@ async def quant_walk_forward(request: QuantWalkForwardRequest):
         return {"success": True, "report": report.to_dict(), "report_path": report.artifact_paths.get("report")}
     except Exception as exc:
         logger.error("Walk-forward 失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/quant/two-stage")
+async def quant_two_stage(request: QuantTwoStageRequest):
+    from scripts.run_quant_two_stage import run
+
+    config_path = _safe_project_path(request.config_path)
+    if not config_path or not config_path.is_file() or config_path.suffix.lower() != ".json":
+        raise HTTPException(status_code=400, detail="两阶段 Quant 配置不存在或不是 JSON")
+    try:
+        report = await asyncio.to_thread(
+            run,
+            config_path,
+            request.experiment_id or None,
+        )
+        return {
+            "success": True,
+            "report": report,
+            "report_path": report.get("report_path"),
+        }
+    except Exception as exc:
+        logger.error("两阶段 Quant 失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -2721,18 +2851,13 @@ async def analyze_async(request: AnalyzeRequest):
         raise HTTPException(status_code=400, detail="请输入股票代码或公司名称")
 
     job_id = uuid.uuid4().hex
-    now = datetime.now().isoformat()
-    analysis_jobs[job_id] = {
-        "job_id": job_id,
-        "status": "queued",
-        "progress": 0,
-        "message": "等待执行",
-        "created_at": now,
-        "updated_at": now,
-        "result": None,
-        "error": None,
-        "task": None,
-    }
+    request_payload = request.model_dump()
+    persisted = job_store.create(
+        job_id=job_id,
+        kind="analysis",
+        request=request_payload,
+    )
+    analysis_jobs[job_id] = {**persisted, "task": None}
     task = asyncio.create_task(
         _run_analysis_job(
             job_id,
@@ -2750,6 +2875,11 @@ async def analyze_async(request: AnalyzeRequest):
 async def get_job(job_id: str):
     job = analysis_jobs.get(job_id)
     if not job:
+        persisted = job_store.get(job_id)
+        if persisted:
+            job = {**persisted, "task": None}
+            analysis_jobs[job_id] = job
+    if not job:
         raise HTTPException(status_code=404, detail="分析任务不存在")
     return _job_view(job)
 
@@ -2757,6 +2887,11 @@ async def get_job(job_id: str):
 @app.delete("/api/jobs/{job_id}", response_model=AnalysisJobResponse)
 async def cancel_job(job_id: str):
     job = analysis_jobs.get(job_id)
+    if not job:
+        persisted = job_store.get(job_id)
+        if persisted:
+            job = {**persisted, "task": None}
+            analysis_jobs[job_id] = job
     if not job:
         raise HTTPException(status_code=404, detail="分析任务不存在")
     if job["status"] in TERMINAL_JOB_STATUSES:
@@ -2916,6 +3051,30 @@ async def start_evidence_maintenance() -> None:
     enabled = os.getenv("EVIDENCE_MAINTENANCE_ENABLED", "true").lower() not in {"0", "false", "no"}
     if enabled and _evidence_maintenance_task is None:
         _evidence_maintenance_task = asyncio.create_task(_evidence_maintenance_loop())
+
+    for recovered in job_store.recover_interrupted():
+        request = recovered.get("request") or {}
+        job_id = recovered["job_id"]
+        analysis_jobs[job_id] = {**recovered, "task": None}
+        if recovered.get("kind") != "analysis" or not request.get("target"):
+            _update_job(
+                job_id,
+                status="failed",
+                progress=100,
+                message="无法恢复未知任务类型",
+                error="持久化请求不完整",
+            )
+            continue
+        task = asyncio.create_task(
+            _run_analysis_job(
+                job_id,
+                request["target"],
+                request.get("timeframe", "短期(1周)"),
+                request.get("skip_agents") or [],
+                request.get("market"),
+            )
+        )
+        analysis_jobs[job_id]["task"] = task
 
 
 @app.on_event("shutdown")

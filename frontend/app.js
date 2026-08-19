@@ -3830,7 +3830,9 @@ function initQuant() {
     document.getElementById('refreshQuantBtn')?.addEventListener('click', loadQuantStatus);
     document.getElementById('refreshQuantEnrichmentBtn')?.addEventListener('click', refreshQuantEnrichment);
     document.getElementById('buildQuantDatasetBtn')?.addEventListener('click', buildQuantDataset);
+    document.getElementById('runQuantFeatureAuditBtn')?.addEventListener('click', runQuantFeatureAudit);
     document.getElementById('runQuantWalkForwardBtn')?.addEventListener('click', runQuantWalkForward);
+    document.getElementById('runQuantTwoStageBtn')?.addEventListener('click', runQuantTwoStage);
     document.getElementById('trainQuantAggregatorBtn')?.addEventListener('click', trainQuantAggregator);
     document.getElementById('runPortfolioBacktestBtn')?.addEventListener('click', runQuantPortfolioBacktest);
     document.getElementById('runEvidenceMaintenanceBtn')?.addEventListener('click', runEvidenceMaintenance);
@@ -3854,10 +3856,14 @@ function renderQuantStatus(data) {
     const enrichment = data.pit_enrichment || {};
     const aggregators = data.learned_aggregators || [];
     const evidence = data.evidence_maintenance || {};
+    const experimentLedger = data.experiment_ledger || {};
+    const runtimeJobs = data.runtime_jobs || {};
     const latestResearch = (data.latest_research_data_v2 || [])[0] || {};
+    const latestTwoStage = (data.latest_two_stage || [])[0] || {};
+    const latestTwoStageSummary = latestTwoStage.summary || {};
     const snapshotCount = (evidence.point_in_time_snapshots || 0) + (evidence.news_snapshots || 0);
     const enabled = aggregators.filter(item => item.enabled && !item.shadow_only).length;
-    const enrichmentEvents = (enrichment.fundamental_events?.records || 0) + (enrichment.performance_events?.records || 0) + (enrichment.announcement_events?.records || 0) + (enrichment.industry_memberships?.records || 0);
+    const enrichmentEvents = (enrichment.fundamental_events?.records || 0) + (enrichment.performance_events?.records || 0) + (enrichment.announcement_events?.records || 0) + (enrichment.industry_memberships?.records || 0) + (enrichment.factor_events?.records || 0);
     const summary = document.getElementById('quantStatusSummary');
     if (summary) {
         summary.innerHTML = `
@@ -3868,6 +3874,8 @@ function renderQuantStatus(data) {
             ${metricCard('Agent 快照', snapshotCount)}
             ${metricCard('PIT 事件', enrichmentEvents)}
             ${metricCard('启用模型', enabled)}
+            ${metricCard('全局试验', experimentLedger.total_trials || 0)}
+            ${metricCard('V3.1 前瞻', evidence.verification_queue?.v31_total || 0)}
         `;
     }
     const dependencies = Object.entries(data.dependencies || {}).map(([name, item]) => `
@@ -3890,11 +3898,13 @@ function renderQuantStatus(data) {
         </div>
         <div class="improvement-panel">
             <h3>证据闭环</h3>
-            <p>待验证 ${evidence.verification_queue?.pending || 0} · 已到期 ${evidence.verification_queue?.overdue || 0} · 已验证 ${evidence.verification_queue?.verified || 0}</p>
+            <p>待验证 ${evidence.verification_queue?.pending || 0} · 已到期 ${evidence.verification_queue?.overdue || 0} · 已验证 ${evidence.verification_queue?.verified || 0} · 重试队列 ${evidence.verification_queue?.retry_scheduled || 0}</p>
+            <p>V3.1 前瞻队列 ${evidence.verification_queue?.v31_total || 0} · 待到期 ${evidence.verification_queue?.v31_pending || 0} · 持久任务 ${runtimeJobs.active || 0}/${runtimeJobs.total || 0}</p>
             <p>基本面/行业/宏观快照 ${evidence.point_in_time_snapshots || 0} · 新闻快照 ${evidence.news_snapshots || 0}</p>
-            <p>公告日财报 ${enrichment.fundamental_events?.records || 0} · 业绩预告/快报 ${enrichment.performance_events?.records || 0} · 官方公告 ${enrichment.announcement_events?.records || 0} · 行业有效区间 ${enrichment.industry_memberships?.records || 0}</p>
+            <p>公告日财报 ${enrichment.fundamental_events?.records || 0} · 业绩预告/快报 ${enrichment.performance_events?.records || 0} · 官方公告 ${enrichment.announcement_events?.records || 0} · 行业有效区间 ${enrichment.industry_memberships?.records || 0} · 财务/一致预期 ${enrichment.factor_events?.records || 0}</p>
         </div>
         ${latestResearch.path ? `<div class="improvement-panel"><h3>最近 Research Data V2</h3><p>${escapeHtml(latestResearch.updated_at || '')}</p><div class="path-note">${escapeHtml(latestResearch.path)}</div></div>` : ''}
+        ${latestTwoStage.path ? `<div class="improvement-panel"><h3>最近两阶段 Quant</h3><p>${escapeHtml(latestTwoStageSummary.experiment_id || '')} · ${latestTwoStageSummary.should_promote ? '门禁通过' : 'Shadow'} · ${latestTwoStageSummary.folds || 0} 折 · 组合晋升 ${latestTwoStageSummary.portfolio_promoted || 0}/${latestTwoStageSummary.portfolio_candidates || 0}</p><p>最佳 ${escapeHtml(latestTwoStageSummary.best_model || '无')} · Brier ${formatQuantDecimal(latestTwoStageSummary.brier_score, 4)} · Gate 改善 ${formatQuantDecimal(latestTwoStageSummary.gate_brier_delta, 4)} · Rank IC ${formatQuantDecimal(latestTwoStageSummary.rank_ic, 4)} · Top K ${formatQuantPct(latestTwoStageSummary.top_k_mean_return_pct)}</p><div class="path-note">${escapeHtml(latestTwoStage.path)}</div></div>` : ''}
         <div class="path-note">特征库: ${escapeHtml(store.db_path || '')}</div>
     `;
 }
@@ -3941,8 +3951,22 @@ async function refreshQuantEnrichment() {
         include_performance: true,
         include_announcements: true,
         include_industry: true,
+        include_financial_quality: true,
+        include_consensus: true,
     };
-    await runQuantAction(button, '/api/quant/refresh-enrichment', payload, '正在采集公告日财报、官方公告和历史行业有效区间...', renderQuantEnrichmentReport);
+    await runQuantAction(button, '/api/quant/refresh-enrichment', payload, '正在采集公告日财报、现金流质量、机构一致预期和历史行业有效区间...', renderQuantEnrichmentReport);
+}
+
+async function runQuantFeatureAudit() {
+    const button = document.getElementById('runQuantFeatureAuditBtn');
+    const payload = {
+        market: document.getElementById('quantMarket')?.value || 'A',
+        horizon: document.getElementById('quantHorizon')?.value || '5d',
+        feature_version: 'quant_features.v4',
+        start_date: document.getElementById('quantStartDate').value,
+        end_date: document.getElementById('quantEndDate').value,
+    };
+    await runQuantAction(button, '/api/quant/feature-audit', payload, '正在审计覆盖率、时效、漂移、异常值和 PIT 血缘...', renderQuantFeatureAuditReport);
 }
 
 async function runQuantWalkForward() {
@@ -3950,7 +3974,7 @@ async function runQuantWalkForward() {
     const payload = {
         market: document.getElementById('quantMarket').value,
         horizon: document.getElementById('quantHorizon').value,
-        feature_version: 'quant_features.v3',
+        feature_version: 'quant_features.v4',
         model_names: ['ridge', 'logistic', 'lightgbm'],
         train_days: readNumber('quantTrainDays', 730),
         validation_days: readNumber('quantValidationDays', 120),
@@ -3970,10 +3994,25 @@ async function runQuantWalkForward() {
         min_industry_stack_brier_delta: 0.0001,
         min_actionable_coverage: 0.01,
         feature_set_names: document.getElementById('quantFeatureAblation').checked
-            ? ['technical', 'technical_fundamental', 'technical_news', 'technical_industry', 'technical_valuation', 'research_v2']
+            ? ['technical', 'technical_size', 'technical_cashflow', 'technical_consensus', 'technical_events', 'technical_industry_v2', 'phase2_full']
             : ['all'],
     };
     await runQuantAction(button, '/api/quant/walk-forward', payload, '正在滚动训练并评估三个影子基线...', renderQuantWalkForwardReport);
+}
+
+async function runQuantTwoStage() {
+    const button = document.getElementById('runQuantTwoStageBtn');
+    const payload = {
+        config_path: 'config/quant/two_stage_v2.json',
+        experiment_id: '',
+    };
+    await runQuantAction(
+        button,
+        '/api/quant/two-stage',
+        payload,
+        '正在执行边际识别、收益排序、独立校准、消融和成本后组合门禁...',
+        renderQuantTwoStageReport,
+    );
 }
 
 async function trainQuantAggregator() {
@@ -4084,9 +4123,20 @@ function renderQuantEnrichmentReport(data) {
     const saved = report.saved || {};
     const status = report.status || {};
     document.getElementById('quantOutput').innerHTML = `
-        <div class="improvement-summary">${metricCard('公告日财报', saved.fundamental || 0)}${metricCard('业绩预告/快报', saved.performance || 0)}${metricCard('官方公告', saved.announcements || 0)}${metricCard('行业区间', saved.industry || 0)}${metricCard('错误', (report.errors || []).length)}</div>
-        <div class="improvement-panel"><h3>PIT 丰富特征仓库</h3><p>财报标的 ${status.fundamental_events?.symbols || 0} · 业绩事件标的 ${status.performance_events?.symbols || 0} · 公告标的 ${status.announcement_events?.symbols || 0} · 行业标的 ${status.industry_memberships?.symbols || 0}</p><p>${(report.errors || []).length ? (report.errors || []).slice(0, 10).map(item => `${escapeHtml(item.symbol)} ${escapeHtml(item.source)}: ${escapeHtml(item.reason)}`).join('<br>') : '所有来源刷新完成。'}</p></div>
+        <div class="improvement-summary">${metricCard('公告日财报', saved.fundamental || 0)}${metricCard('财务质量', saved.financial_quality || 0)}${metricCard('机构研报', saved.consensus || 0)}${metricCard('业绩预告/快报', saved.performance || 0)}${metricCard('官方公告', saved.announcements || 0)}${metricCard('行业区间', saved.industry || 0)}${metricCard('错误', (report.errors || []).length)}</div>
+        <div class="improvement-panel"><h3>PIT 丰富特征仓库</h3><p>财报标的 ${status.fundamental_events?.symbols || 0} · 财务/预期标的 ${status.factor_events?.symbols || 0} · 业绩事件标的 ${status.performance_events?.symbols || 0} · 公告标的 ${status.announcement_events?.symbols || 0} · 行业标的 ${status.industry_memberships?.symbols || 0}</p><p>${(report.errors || []).length ? (report.errors || []).slice(0, 10).map(item => `${escapeHtml(item.symbol)} ${escapeHtml(item.source)}: ${escapeHtml(item.reason)}`).join('<br>') : '所有来源刷新完成。'}</p></div>
         <div class="path-note">报告: ${escapeHtml(data.report_path || '')}</div>
+    `;
+}
+
+function renderQuantFeatureAuditReport(data) {
+    const report = data.report || {};
+    const coverage = report.family_coverage || {};
+    const checks = Object.entries(report.gate?.checks || {}).map(([name, passed]) => `<tr><td>${escapeHtml(name)}</td><td>${passed ? '通过' : '未通过'}</td></tr>`).join('');
+    document.getElementById('quantOutput').innerHTML = `
+        <div class="improvement-summary">${metricCard('样本', report.rows || 0)}${metricCard('股票', report.unique_symbols || 0)}${metricCard('日期', report.unique_dates || 0)}${metricCard('资产负债表', `${Math.round((coverage.balance || 0) * 100)}%`)}${metricCard('现金流', `${Math.round((coverage.cashflow || 0) * 100)}%`)}${metricCard('一致预期', `${Math.round((coverage.consensus || 0) * 100)}%`)}${metricCard('血缘违规', report.lineage?.violations || 0)}${metricCard('质量门禁', report.gate?.passed ? '通过' : '未通过')}</div>
+        <div class="improvement-panel"><h3>特征质量门禁</h3><div class="table-wrap"><table class="quant-table"><thead><tr><th>检查项</th><th>结果</th></tr></thead><tbody>${checks}</tbody></table></div><p>漂移特征 ${Object.keys(report.drift_features || {}).length} · 异常值特征 ${Object.keys(report.outlier_features || {}).length} · 过期率 ${Math.round((report.staleness?.rate || 0) * 1000) / 10}%</p></div>
+        <div class="path-note">报告: ${escapeHtml(data.report_path || report.report_path || '')}</div>
     `;
 }
 
@@ -4111,6 +4161,41 @@ function renderQuantWalkForwardReport(data) {
         ${ablationRows ? `<div class="improvement-panel"><h3>特征族增量</h3><div class="table-wrap"><table class="quant-table"><thead><tr><th>模型</th><th>特征集</th><th>Brier 改善</th><th>Rank IC 增量</th><th>方向收益增量</th></tr></thead><tbody>${ablationRows}</tbody></table></div></div>` : ''}
         <div class="improvement-panel"><h3>Lockbox</h3><p>${escapeHtml(report.lockbox?.status || '')} · ${escapeHtml(report.lockbox?.note || '')} · 样本 ${report.lockbox?.samples || 0}</p><p>${escapeHtml(gate.reason || '')}</p></div>
         <div class="path-note">报告: ${escapeHtml(data.report_path || '')}</div>
+    `;
+}
+
+function renderQuantTwoStageReport(data) {
+    const pipeline = data.report || {};
+    const report = pipeline.two_stage || {};
+    const gate = report.promotion_gate || {};
+    const best = (report.aggregate_metrics || {})[gate.best_model] || {};
+    const risk = report.risk_controls || {};
+    const incremental = gate.feature_incremental || {};
+    const portfolioReports = pipeline.portfolio || {};
+    const promotedPortfolio = Object.values(portfolioReports).filter(item => item.promotion_gate?.should_promote).length;
+    const checks = Object.entries(gate.checks || {}).map(([name, passed]) => `
+        <tr><td>${escapeHtml(name)}</td><td>${passed ? '通过' : '未通过'}</td></tr>
+    `).join('');
+    const variants = Object.entries(report.aggregate_metrics || {})
+        .filter(([name]) => name !== 'empirical_prior')
+        .map(([name, item]) => `<tr><td>${escapeHtml(name)}</td><td>${formatQuantDecimal(item.gate_brier, 4)}</td><td>${formatQuantDecimal(item.brier_score, 4)}</td><td>${formatQuantDecimal(item.rank_ic, 4)}</td><td>${formatQuantDecimal(item.actionable_coverage, 3)}</td><td>${formatQuantPct(item.top_k_mean_return_pct)}</td><td>${formatQuantDecimal(item.top_industry_concentration, 3)}</td></tr>`)
+        .join('');
+    document.getElementById('quantOutput').innerHTML = `
+        <div class="improvement-summary">
+            ${metricCard('最佳组合', gate.best_model || '无')}
+            ${metricCard('模型门禁', gate.should_promote ? '通过' : 'Shadow')}
+            ${metricCard('Gate Brier 改善', formatQuantDecimal(best.gate_brier_delta, 4))}
+            ${metricCard('Rank IC', formatQuantDecimal(best.rank_ic, 4))}
+            ${metricCard('可操作覆盖', `${Math.round((best.actionable_coverage || 0) * 1000) / 10}%`)}
+            ${metricCard('Top K 收益', formatQuantPct(best.top_k_mean_return_pct))}
+            ${metricCard('组合候选', Object.keys(portfolioReports).length)}
+            ${metricCard('组合晋升', promotedPortfolio)}
+        </div>
+        <div class="improvement-panel"><h3>样本外候选</h3><div class="table-wrap"><table class="quant-table"><thead><tr><th>Gate + 排序 + 特征</th><th>Gate Brier</th><th>三分类 Brier</th><th>Rank IC</th><th>边际覆盖</th><th>Top K 收益</th><th>行业集中</th></tr></thead><tbody>${variants}</tbody></table></div></div>
+        <div class="improvement-panel"><h3>晋升门禁</h3><div class="table-wrap"><table class="quant-table"><thead><tr><th>检查项</th><th>结果</th></tr></thead><tbody>${checks}</tbody></table></div><p>${escapeHtml(gate.reason || '')}</p></div>
+        <div class="improvement-panel"><h3>Phase 2 OOF 增量</h3><p>${incremental.passed ? '通过' : '未通过'} · 候选 ${escapeHtml(incremental.candidate || '无')} · 基线 ${escapeHtml(incremental.baseline || '无')}</p><p>Brier 增量 ${formatQuantDecimal(incremental.brier_delta, 4)} · Rank IC 增量 ${formatQuantDecimal(incremental.rank_ic_delta, 4)} · Top K 增量 ${formatQuantPct(incremental.top_k_return_delta_pct)}</p><p>${escapeHtml(incremental.reason || '')}</p></div>
+        <div class="improvement-panel"><h3>风险与验证边界</h3><p>${escapeHtml(risk.size_note || '')}</p><p>Lockbox ${escapeHtml(report.lockbox?.status || '')} · ${report.lockbox?.samples || 0} 样本 · 全局试验计数 ${gate.global_trial_count_after || 0}</p></div>
+        <div class="path-note">报告: ${escapeHtml(data.report_path || pipeline.report_path || '')}</div>
     `;
 }
 
@@ -4144,7 +4229,7 @@ function renderEvidenceMaintenanceReport(data) {
     const report = data.report || {};
     const collection = report.collection || {};
     document.getElementById('quantOutput').innerHTML = `
-        <div class="improvement-summary">${metricCard('本轮验证', report.verified_count || 0)}${metricCard('剩余待验证', report.queue_after?.pending || 0)}${metricCard('仍已到期', report.queue_after?.overdue || 0)}${metricCard('采集快照', collection.saved_count || 0)}</div>
+        <div class="improvement-summary">${metricCard('本轮尝试', report.attempted_count || 0)}${metricCard('本轮验证', report.verified_count || 0)}${metricCard('安排重试', report.retry_scheduled_count || 0)}${metricCard('剩余待验证', report.queue_after?.pending || 0)}${metricCard('仍已到期', report.queue_after?.overdue || 0)}${metricCard('采集快照', collection.saved_count || 0)}</div>
         <div class="improvement-panel"><h3>维护结果</h3><p>${(report.errors || []).length ? (report.errors || []).map(escapeHtml).join(' · ') : '本轮维护完成，未发现执行错误。'}</p></div>
     `;
 }

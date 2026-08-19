@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS predictions (
     agents_failed   TEXT,
     elapsed_seconds REAL,
     llm_model       TEXT,
+
+    -- Forward cohort lineage and persistent verification retries
+    cohort_id       TEXT,
+    lineage_json    TEXT,
+    code_revision   TEXT,
+    prompt_bundle_hash TEXT,
+    skill_registry_hash TEXT,
+    verification_status TEXT DEFAULT 'scheduled',
+    verification_attempts INTEGER DEFAULT 0,
+    last_verification_attempt_at TEXT,
+    next_verification_at TEXT,
+    verification_last_error TEXT,
     
     summary         TEXT,
     report_json     TEXT,
@@ -104,4 +116,6 @@ CREATE TABLE IF NOT EXISTS accuracy_stats (
 CREATE INDEX IF NOT EXISTS idx_predictions_target ON predictions(target);
 CREATE INDEX IF NOT EXISTS idx_predictions_time ON predictions(predicted_at);
 CREATE INDEX IF NOT EXISTS idx_predictions_verified ON predictions(verified_at);
+-- V3.1 cohort/retry indexes are created by PredictionStore._migrate_schema.
+-- Keeping them out of this base script lets existing databases add columns first.
 CREATE INDEX IF NOT EXISTS idx_agent_results_prediction ON agent_results(prediction_id);
